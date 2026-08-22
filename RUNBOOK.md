@@ -100,6 +100,10 @@ mudata/anndata stack reads correctly under the pipeline's pinned
 `infer_region_to_gene` makes.
 
 ```bash
+# Check first -- 10 seconds, and it catches the failures that otherwise appear
+# minutes into a ~900-package install with a misleading solver trace.
+bash 03_pipeline/preflight_env.sh          # must exit 0
+
 # Pipeline env. Git deps are pinned to explicit commits, so this is reproducible.
 mamba env create -f 03_pipeline/environment.yml
 conda activate scenicplus
@@ -110,6 +114,13 @@ pip check                                             # worth the 5 seconds
 
 Put the env on a filesystem visible to compute nodes, and set `CONDA_PKGS_DIRS`
 somewhere with several GB free — not a quota'd `$HOME`.
+
+**`mallet` is linux-64 only.** conda-forge ships exactly one build
+(`mallet-2.0.8-ha770c72_0`, depends on `openjdk`) and no macOS build at all. ARC
+is linux-64 so this resolves there; on a Mac the solve fails with *"mallet =\* \*
+does not exist (perhaps a typo or a missing channel)"*, which looks like a
+channel problem and isn't. The preflight checks this for your platform, and the
+env file documents the upstream-tarball fallback.
 
 Your existing scGLUE env covers stage 5. It needs anndata, mudata,
 scikit-learn, numpy, pandas — nothing else.
@@ -256,5 +267,7 @@ methods alongside any of these. Both bound what the eGRNs can support.
 | Java `OutOfMemoryError` | MALLET heap | raise `MALLET_MEMORY`; no Python arg will help |
 | `prepare_GEX_ACC` in the dry-run plan | `combined_GEX_ACC_mudata` not pointed at `ACC_GEX.h5mu` | fix the config; do not proceed |
 | `bedtools not found` | runtime dep missing | it is in `environment.yml`; confirm the env is active |
+| `mallet =* * does not exist` at env-create | not a channel problem — mallet is linux-64 only | on linux-64 it resolves; elsewhere use the upstream tarball + `--mallet-path`. Run `preflight_env.sh` |
+| pip: `requires a different Python` | `python=3.11` resolved past 3.11.8 | the patch pin is load-bearing; keep `python=3.11.8` |
 | pybiomart connection error | compute node has no internet | run `--until download_genome_annotations` on a login node |
 | walltime kill mid-GBM | `--time` too low | raise it; completed outputs are reused on resubmit |

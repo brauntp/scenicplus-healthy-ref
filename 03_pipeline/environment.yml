@@ -73,8 +73,20 @@ dependencies:
   # pass the resolved launcher path explicitly rather than relying on PATH
   # inside a SLURM job. Mallet also wants a large heap -- export
   # MALLET_MEMORY=<N>g before running topic modelling.
+  # PLATFORM NOTE (verified against conda-forge repodata, not assumed):
+  #   `mallet` exists in conda-forge ONLY for linux-64, as a single build:
+  #   mallet-2.0.8-ha770c72_0.tar.bz2, depends: [openjdk].
+  #   There is NO osx-arm64 or osx-64 build. `mamba env create` on a Mac fails
+  #   with "mallet =* * does not exist (perhaps a typo or a missing channel)"
+  #   -- which looks like a channel problem and is not. ARC is linux-64, so
+  #   this resolves there. If you ever need this env on a Mac, drop the
+  #   `mallet` line and install Mallet from the upstream tarball:
+  #       wget https://mimno.github.io/Mallet/dist/Mallet-202108-bin.tar.gz
+  #   then pass --mallet-path <dir>/bin/mallet to run_cistopic.py.
+  #   Run `bash 03_pipeline/preflight_env.sh` before creating the env to check
+  #   this for your platform up front.
   - openjdk=17
-  - mallet
+  - mallet=2.0.8          # linux-64 only; see the note above
 
   # --- genomics command-line tools ----------------------------------------
   # bedtools is a RUNTIME dependency, not just a build one: pybedtools shells
