@@ -20,9 +20,14 @@ getarg <- function(flag, default = NULL) {
   i <- which(args == flag)
   if (length(i) && length(args) > i[1]) args[i[1] + 1] else default
 }
+# Accept both spellings: --proj here, --archr-project in
+# 01_cistopic/export_from_archr.R. Same thing; taking either avoids a
+# needless failure when copying a path between the two stages.
 proj_path <- getarg("--proj")
+if (is.null(proj_path)) proj_path <- getarg("--archr-project")
 out_stem  <- getarg("--out", "report_archr")
-if (is.null(proj_path)) stop("--proj /path/to/ArchRProject is required")
+if (is.null(proj_path))
+  stop("path to the ArchRProject is required: --proj (or --archr-project) /path/to/ArchRProject")
 
 # json writer: prefer jsonlite, fall back to a minimal serializer so this
 # script never fails on a cluster module that lacks it.

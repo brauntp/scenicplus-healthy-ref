@@ -25,20 +25,46 @@ mkdir -p slurm/logs          # SLURM discards output silently if this is absent
 **Do this first and stop.** Its output sets every parameter below. Both scripts
 open files read-only; `inspect_archr.R` never calls `saveArchRProject`.
 
+The reference lives here (confirmed on ARC):
+
+```
+$REF = /home/groups/MaxsonBraunScratch/worme/projects/scATAC/
+       251112_hematopoiesis_ref/integration/output/02
+    rna.h5ad   atac.h5ad   combined.h5ad
+    combined_glue_embeddings.tsv
+    atac_metadata_with_transferred_labels.tsv
+    John_Dick_cell_type_palette.tsv          final.dill
+```
+
 ```bash
+REF=/home/groups/MaxsonBraunScratch/worme/projects/scATAC/251112_hematopoiesis_ref/integration/output/02
+
 # ArchR side: peaks, matrices, fragments; also writes the consensus peak BED
 Rscript 00_inspect/inspect_archr.R \
-    --proj /path/to/ArchRProject \
-    --out  report_archr
+    --archr-project /path/to/ArchRProject \
+    --out           report_archr
 
 # RNA + ATAC AnnData side
 python 00_inspect/inspect_anndata.py \
-    --rna  /path/to/RNA.h5ad \
-    --atac /path/to/ATAC.h5ad \
+    --rna  "$REF/rna.h5ad" \
+    --atac "$REF/atac.h5ad" \
     --out  report_py
-# single integrated object instead:
-#   python 00_inspect/inspect_anndata.py --mudata integrated.h5mu --out report_py
 ```
+
+Two things about this layout to settle from the reports before going further.
+
+**The GLUE embedding and the transferred labels may live in the TSVs rather
+than inside the `.h5ad` objects.** `combined_glue_embeddings.tsv` and
+`atac_metadata_with_transferred_labels.tsv` existing alongside the objects
+suggests exactly that. The inspector reports which `obsm` keys and `obs`
+columns are actually present; stage 5 accepts either source
+(`--latent-tsv` / `--obs-tsv`).
+
+**`atac.h5ad` is probably not a peak matrix.** It was the GLUE input, so it is
+likely a gene-activity or tile matrix — SCENIC+ needs peaks. The inspector's
+region-width report settles it. Either way stage 4a exports the PeakMatrix from
+the ArchRProject, which is the authoritative peak source; `atac.h5ad` is used
+only for its cell ids and latent coordinates.
 
 `inspect_archr.R` needs only ArchR (jsonlite optional). `inspect_anndata.py`
 needs anndata + mudata — the scGLUE env from stage 3 is fine, or any env with
@@ -183,7 +209,7 @@ This is the custom step — the reason this repo exists.
 ```bash
 conda activate <your scGLUE env>
 python 02_pair/glue_metacells.py \
-    --rna                 /path/to/RNA.h5ad \
+    --rna                 "$REF/rna.h5ad" \
     --atac                cistopic_out/imputed_accessibility.h5ad \
     --latent-key          X_glue \
     --group-key           <CELLTYPE_OBS_KEY> \
@@ -192,6 +218,33 @@ python 02_pair/glue_metacells.py \
     --out                 ACC_GEX.h5mu \
     --diagnostics         pairing_diagnostics
 ```
+
+**If stage 1 showed the latent or the labels are NOT in the objects**, point at
+the TSVs instead — a single combined embedding file covering both modalities is
+handled (rows are matched by cell id, non-numeric columns ignored):
+
+```bash
+python 02_pair/glue_metacells.py \
+    --rna                 "$REF/rna.h5ad" \
+    --atac                cistopic_out/imputed_accessibility.h5ad \
+    --latent-tsv          "$REF/combined_glue_embeddings.tsv" \
+    --obs-tsv             "$REF/atac_metadata_with_transferred_labels.tsv" \
+    --group-key           <CELLTYPE_OBS_KEY> \
+    --cells-per-metacell  50 \
+    --out                 ACC_GEX.h5mu \
+    --diagnostics         pairing_diagnostics
+```
+
+Both paths refuse rather than silently subsetting: a cell present in the object
+but absent from the embedding TSV is a hard error, as is zero cell-id overlap
+with a metadata TSV. Every argument is recorded under `params` in
+`pairing_diagnostics.json`, so which embedding was used stays traceable.
+
+One caveat specific to this dataset: the ATAC cell ids in
+`imputed_accessibility.h5ad` come from the ArchR export, while the latent
+coordinates come from the GLUE run. If ArchR wrote `Sample#BARCODE` and GLUE
+saw plain barcodes, the ids will not match and the script will say so. Fix it by
+harmonising the ids, never by dropping the non-matching cells.
 
 **Read `pairing_diagnostics.csv` before going further.** The
 `median_crossmodal_gap` column is the one that matters: a large value for a cell
