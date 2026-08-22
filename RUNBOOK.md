@@ -13,9 +13,21 @@ and `sinfo -s`; `<CONDA_BASE>` is the output of `conda info --base`.
 ## 0. Clone and make the log directory
 
 ```bash
+cd /home/groups/MaxsonLab/braun/analysis
 git clone https://github.com/brauntp/scenicplus-healthy-ref.git
 cd scenicplus-healthy-ref
 mkdir -p slurm/logs          # SLURM discards output silently if this is absent
+```
+
+The repo is public, so this needs no credentials, and a clone preserves the
+executable bits on all 15 scripts. Pick up later fixes with `git pull`.
+
+A ZIP download or `rsync` works too, but **both lose the executable bits** —
+`sbatch` on a non-executable script fails. After either, run:
+
+```bash
+chmod +x 00_inspect/* 01_cistopic/* 02_pair/*.py 03_pipeline/*.sh \
+         03_pipeline/*.py 04_db/*.sh 04_db/*.py docs/*.py slurm/*
 ```
 
 ---
