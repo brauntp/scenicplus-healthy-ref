@@ -78,7 +78,33 @@ region-width report settles it. Either way stage 4a exports the PeakMatrix from
 the ArchRProject, which is the authoritative peak source; `atac.h5ad` is used
 only for its cell ids and latent coordinates.
 
-**Neither inspector runs in the base conda env** — `Rscript` is usually not on
+### Fastest path: the h5py-only inspector
+
+`.h5ad` is documented HDF5, so the facts stage 1 needs can be read without
+anndata — and therefore without finding whichever env the integration ran in.
+`run_lite.sh` locates a python that has h5py and re-executes with it:
+
+```bash
+REF=/home/groups/MaxsonBraunScratch/worme/projects/scATAC/251112_hematopoiesis_ref/integration/output/02
+bash 00_inspect/run_lite.sh "$REF/rna.h5ad" "$REF/atac.h5ad" \
+    --tsv "$REF/combined_glue_embeddings.tsv" \
+          "$REF/atac_metadata_with_transferred_labels.tsv" \
+    --out report_lite
+```
+
+It answers: cell and feature counts; whether ATAC `var_names` are peaks
+(with width and `chr` prefix) or gene/tile names; whether the GLUE latent is in
+`obsm` or only in the TSV; the `obs` columns and their levels; the cell-id
+format — compared across the `.h5ad` files and the TSVs, which is how the
+ArchR-vs-GLUE id mismatch surfaces now rather than at stage 5; and whether `X`
+is raw counts or normalized.
+
+If no python on the machine has h5py, it prints the one-line fix
+(`pip install --user h5py` — binary wheel, seconds).
+
+### Full inspectors (more detail, more dependencies)
+
+**Neither runs in the base conda env** — `Rscript` is usually not on
 PATH, and base has no `anndata`. You already have both somewhere: the GLUE
 integration ran in a python env with anndata, and the ArchRProject was built in
 an R with ArchR. Find them rather than building anything:
