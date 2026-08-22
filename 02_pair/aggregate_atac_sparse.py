@@ -119,6 +119,22 @@ def main():
     ap.add_argument("--cells-per-metacell", type=int, default=50)
     ap.add_argument("--cells-per-metacell-atac", type=int, default=None)
     ap.add_argument("--min-cells-per-group", type=int, default=50)
+    ap.add_argument("--oversample", type=float, default=2.0,
+                    help="Metacells per group = (cells/k) * OVERSAMPLE. Values >1 "
+                         "mean metacells share cells. This improves link RANKING "
+                         "(more, better-conditioned observations for the GBM) but "
+                         "does NOT add independent information -- see --help-stats. "
+                         "4-8 is a reasonable range when compute is cheap; the "
+                         "returns are largest for small populations. (default: 2)")
+    ap.add_argument("--min-metacells-per-group", type=int, default=0,
+                    help="Floor on metacells per group, raising the effective "
+                         "oversample for SMALL populations only. This is where "
+                         "oversampling earns its keep: a 300-cell population at "
+                         "k=50 yields 6 non-overlapping metacells, too few for a "
+                         "stable regression. 0 disables the floor.")
+    ap.add_argument("--max-oversample", type=float, default=16.0,
+                    help="Ceiling on the effective oversample the floor may reach. "
+                         "Beyond ~16 the added metacells are near-duplicates.")
     ap.add_argument("--seed", type=int, default=666)
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--diagnostics", type=Path, default=None)
@@ -176,7 +192,16 @@ def main():
         if len(ir) < args.min_cells_per_group or len(ia) < args.min_cells_per_group:
             dropped.append({"group": g, "n_rna": int(len(ir)), "n_atac": int(len(ia))})
             continue
-        n_mc = max(1, int(min(len(ir), len(ia)) / max(k_r, k_a) * 2))
+        n_cells_eff = min(len(ir), len(ia))
+        base_mc = n_cells_eff / max(k_r, k_a)
+        n_mc = max(1, int(base_mc * args.oversample))
+        eff_ov = args.oversample
+        if args.min_metacells_per_group and n_mc < args.min_metacells_per_group:
+            capped = int(base_mc * args.max_oversample)
+            n_mc = max(1, min(args.min_metacells_per_group, capped))
+            eff_ov = n_mc / max(base_mc, 1e-9)
+            _log(f"group {g!r}: small population, raising oversample to "
+                 f"{eff_ov:.1f}x to reach {n_mc} metacells")
         Zr_g, Za_g = Zr[ir], Za[ia]
         anchors = maximin_anchors(np.vstack([Zr_g, Za_g]), n_mc, rng)
         A = np.vstack([Zr_g, Za_g])[anchors]
@@ -191,6 +216,11 @@ def main():
         d_a = 1.0 - (A * Za_g[mem_a[:, 0]]).sum(1)
         diags[g] = {"n_rna_cells": int(len(ir)), "n_atac_cells": int(len(ia)),
                     "n_metacells": int(A.shape[0]),
+                    "effective_oversample": round(float(eff_ov), 2),
+                    # Independent-observation equivalent: how many NON-overlapping
+                    # metacells this population could support. Use THIS, not
+                    # n_metacells, when judging how much a link is really supported.
+                    "independent_metacell_equiv": int(max(1, base_mc)),
                     "mean_nn_dist_rna": float(np.mean(d_r)),
                     "mean_nn_dist_atac": float(np.mean(d_a)),
                     "median_crossmodal_gap": float(np.median(np.abs(d_r - d_a))),
@@ -219,11 +249,23 @@ def main():
         "latent_key": args.latent_key, "group_key": args.group_key,
         "cells_per_metacell_rna": k_r, "cells_per_metacell_atac": k_a,
         "seed": args.seed,
+        "oversample": args.oversample,
+        "min_metacells_per_group": args.min_metacells_per_group,
         "caveat": ("Metacells pair cells by GLUE-latent proximity, not by "
                    "co-measurement. Accessibility is a mean of raw counts over k "
                    "cells, NOT topic-imputed: no cross-cell smoothing beyond the "
                    "averaging itself. Region-to-gene links are manifold-level "
-                   "covariation, not single-nucleus co-occurrence.")}
+                   "covariation, not single-nucleus co-occurrence."),
+        "oversampling_caveat": (
+            "With oversample > 1 metacells SHARE cells and are not independent "
+            "observations. Simulation: oversampling improves true-vs-decoy link "
+            "RANKING (AUROC 0.79 -> 0.98 at high integration noise, k=50) while "
+            "median rho on true links stays flat -- but under a pure null the "
+            "naive p<0.05 rate rises from 0.125 to 0.175 and p<0.001 from 0.000 "
+            "to 0.050 as oversample goes 1 -> 16. Treat SCENIC+ region-to-gene "
+            "p-values as ranking scores, not calibrated significance, and judge "
+            "support using independent_metacell_equiv in the diagnostics rather "
+            "than n_metacells.")}
     args.out.parent.mkdir(parents=True, exist_ok=True)
     md.write_h5mu(str(args.out))
     _log(f"wrote {args.out}: {M_rna.shape[0]} metacells, "
