@@ -122,6 +122,11 @@ def inspect(path: Path) -> dict:
             rep["n_obs"] = int(obs[idx_key].shape[0]) if idx_key in obs else None
             rep["obs_index_name"] = idx_key
             rep["obs_names_sample"] = names
+            # A larger sample, kept out of the printed report, so TSV comparison
+            # can test real membership instead of guessing from id shape.
+            if idx_key in obs:
+                big, _ = _read_strings(obs[idx_key], limit=3000)
+                rep["_obs_id_sample"] = set(big or [])
             if names:
                 rep["cell_id_has_hash"] = any("#" in n for n in names)
                 rep["cell_id_has_suffix_dash"] = any(re.search(r"-\d+$", n) for n in names)
@@ -249,13 +254,30 @@ def peek_tsv(path: Path, n_ids: int = 5) -> dict:
         rep["n_columns"] = len(header)
         rep["header_first"] = header[:8]
         rep["header_last"] = header[-4:] if len(header) > 8 else []
-        ids, nrow = [], 0
+        ids, nrow, widths = [], 0, set()
+        id_set = set()
         for row in rdr:
-            if nrow < n_ids and row:
-                ids.append(row[0])
+            if row:
+                if nrow < n_ids:
+                    ids.append(row[0])
+                if nrow < 200_000:
+                    id_set.add(row[0])
+                widths.add(len(row))
             nrow += 1
         rep["n_rows"] = nrow
         rep["first_ids"] = ids
+        rep["_id_sample"] = id_set          # for real overlap testing, not printed
+        rep["row_widths"] = sorted(widths)[:4]
+        # R's write.table(row.names=TRUE) emits a header with ONE FEWER field
+        # than each data row. Detected here because it silently shifts every
+        # column by one when read with a naive header=0 parser.
+        if widths and len(header) == (min(widths) - 1):
+            rep["r_rownames_quirk"] = True
+            rep["note"] = ("header has one fewer field than the data rows -- this is "
+                           "R write.table(row.names=TRUE). The first data field is the "
+                           "ROW NAME (likely the cell id); read with index_col=0.")
+        else:
+            rep["r_rownames_quirk"] = False
         rep["id_has_hash"] = any("#" in i for i in ids)
         rep["id_has_suffix_dash"] = any(re.search(r"-\d+$", i) for i in ids)
         # numeric width = plausible embedding dimensionality
@@ -285,14 +307,28 @@ def tsv_md(tsvs, h5reps):
         L.append(f"- first ids: `{t['first_ids']}` "
                  f"(contains '#': {t['id_has_hash']})")
         L.append("")
-        for fn, ex in h5_ids.items():
-            if ex is None:
+        # Compare ACTUAL ids, not format flags. Two id sets can share a format
+        # and still be disjoint (integer row numbers vs opaque hashes), which a
+        # flags-only check reports as compatible -- exactly backwards.
+        for r in h5reps:
+            fn = Path(r["file"]).name
+            obs_sample = set(r.get("_obs_id_sample") or [])
+            ex = (r.get("obs_names_sample") or [None])[0]
+            if not obs_sample:
                 continue
-            same = (("#" in ex) == t["id_has_hash"]) and \
-                   (bool(re.search(r"-\d+$", ex)) == t["id_has_suffix_dash"])
-            L.append(f"  - vs `{fn}` obs_names (`{ex}`): "
-                     + ("id format looks COMPATIBLE" if same
-                        else "**ID FORMAT DIFFERS — pairing will refuse until harmonised**"))
+            hit = len(obs_sample & t.get("_id_sample", set()))
+            frac = hit / max(len(obs_sample), 1)
+            if frac >= 0.99:
+                verdict = f"**IDS MATCH** ({hit}/{len(obs_sample)} sampled ids found)"
+            elif hit:
+                verdict = (f"**PARTIAL OVERLAP** -- only {hit}/{len(obs_sample)} "
+                           f"sampled ids found ({frac:.0%})")
+            else:
+                verdict = ("**NO SHARED IDS** -- 0 of "
+                           f"{len(obs_sample)} sampled ids appear in this TSV. "
+                           "These are different id spaces; they must be mapped, "
+                           "not just reformatted.")
+            L.append(f"  - vs `{fn}` obs_names (e.g. `{ex}`): {verdict}")
         L.append("")
     return "\n".join(L)
 
@@ -324,8 +360,11 @@ def main():
             print(f"WARNING: missing {p}", file=sys.stderr)
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
+    def _strip(d):
+        return {k: v for k, v in d.items() if not k.startswith("_")}
     with open(f"{args.out}.json", "w") as fh:
-        json.dump({"h5ad": reps, "tsv": tsvs}, fh, indent=2, default=str)
+        json.dump({"h5ad": [_strip(r) for r in reps],
+                   "tsv": [_strip(t) for t in tsvs]}, fh, indent=2, default=str)
     md = to_md(reps) + tsv_md(tsvs, reps)
     with open(f"{args.out}.md", "w") as fh:
         fh.write(md)
