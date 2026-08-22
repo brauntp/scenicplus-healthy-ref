@@ -124,8 +124,25 @@ def read_tsv_labels(path: Path, max_rows=None) -> dict:
         else:
             entry["levels_sample"] = uniq[:10]
         vocab[cname] = entry
+        # Only treat a column as cell IDS if it is (a) named like a rowname/
+        # barcode, (b) nearly all-unique, and (c) NOT numeric. Without the
+        # numeric guard a per-cell float score like
+        # 'predicted_CellType_confidence' is all-unique and gets mistaken for
+        # an id column, producing a meaningless "ids do not align" verdict.
         if cname == "__rowname__" or ID_HINT.search(cname):
-            ids = vals[:5000] if len(uniq) > len(vals) * 0.5 else ids
+            mostly_unique = len(uniq) > len(vals) * 0.5
+            def _numeric(s):
+                try:
+                    float(s)
+                    return True
+                except (TypeError, ValueError):
+                    return False
+            probe = uniq[:50]
+            looks_numeric = bool(probe) and all(_numeric(v) for v in probe)
+            if mostly_unique and not looks_numeric:
+                ids = vals[:5000]
+            elif mostly_unique and looks_numeric:
+                entry["rejected_as_id"] = "all-unique but numeric (a score, not an id)"
     out["columns_of_interest"] = vocab
     out["candidate_ids"] = ids[:5000]
     return out
@@ -142,6 +159,11 @@ def main():
     ap.add_argument("--h5ad", type=Path, nargs="+", required=True)
     ap.add_argument("--tsv", type=Path, nargs="*", default=[])
     ap.add_argument("--out", type=Path, default=Path("label_report"))
+    ap.add_argument("--brief", action="store_true",
+                    help="Print a compact summary sized for pasting into a "
+                         "message: label columns with level COUNTS only, the top "
+                         "vocabulary overlaps, and id alignment. The full report "
+                         "is still written to <out>.md.")
     args = ap.parse_args()
 
     h5 = []
@@ -246,9 +268,12 @@ def main():
     for t in tsvs:
         tid = set(t.get("candidate_ids") or [])
         if not tid:
-            L.append(f"- `{Path(t['file']).name}`: no id-like column found; "
-                     "rows may be in the same ORDER as the object "
-                     "(check n_rows against n_obs).")
+            L.append(f"- `{Path(t['file']).name}`: **no cell-id column at all.** "
+                     "The only possible join is POSITIONAL (row i <-> cell i). "
+                     "Do not assume it — `02_pair/attach_atac_labels.py` proves "
+                     "or refutes the row order by checking every column shared "
+                     "with the .h5ad `obs`, and refuses to emit anything if they "
+                     "disagree.")
         for r in h5:
             hid = set(r.get("obs_ids") or [])
             if not hid:
@@ -272,9 +297,53 @@ def main():
         fh.write(md)
     with open(f"{args.out}.json", "w") as fh:
         json.dump({"h5ad": h5, "tsv": tsvs}, fh, indent=2, default=str)
-    print()
-    print(md)
-    print(f"\nwrote {args.out}.md and {args.out}.json")
+
+    if args.brief:
+        B = ["=== LABEL SUMMARY (brief) ==="]
+        for r in h5:
+            nm = Path(r["file"]).name
+            B.append(f"\n[{nm}]  {r['n_obs']:,} cells" if r["n_obs"] else f"\n[{nm}]")
+            lab = {k: v for k, v in r["categorical"].items() if v["label_like"]}
+            if not lab:
+                B.append("  (no label-like categorical column in obs)")
+            for k, v in sorted(lab.items(), key=lambda kv: kv[1]["n_levels"]):
+                B.append(f"  {k}: {v['n_levels']} levels")
+        for t in tsvs:
+            B.append(f"\n[{Path(t['file']).name}]  {t['n_rows']:,} rows x "
+                     f"{t['n_columns']} cols"
+                     + ("  (R row.names quirk)" if t["r_rownames_quirk"] else ""))
+            for k, v in t["columns_of_interest"].items():
+                if v["label_like"]:
+                    B.append(f"  {k}: {v['n_unique']} unique")
+        B.append("\n--- vocabulary overlap (Jaccard, top 6) ---")
+        shown = 0
+        for js, f1, k1, n1, f2, k2, n2, o1, o2 in best[:6]:
+            B.append(f"  {js:.2f}  {f1}:{k1} ({n1})  vs  {f2}:{k2} ({n2})")
+            shown += 1
+        if not shown:
+            B.append("  NO shared level names between any pair")
+        B.append("\n--- id alignment ---")
+        for t in tsvs:
+            tid = set(t.get("candidate_ids") or [])
+            for r in h5:
+                hid = set(r.get("obs_ids") or [])
+                if not hid:
+                    continue
+                nm = Path(r["file"]).name
+                if tid:
+                    hit = len(hid & tid)
+                    ok = "ALIGN" if hit / max(len(hid), 1) > 0.99 else "NO"
+                    B.append(f"  {Path(t['file']).name} vs {nm}: "
+                             f"{hit}/{len(hid)}  [{ok}]")
+                if r["n_obs"] == t["n_rows"]:
+                    B.append(f"    row count == {nm} n_obs ({t['n_rows']:,})")
+        print()
+        print("\n".join(B))
+        print(f"\n(full report: {args.out}.md)")
+    else:
+        print()
+        print(md)
+        print(f"\nwrote {args.out}.md and {args.out}.json")
 
 
 if __name__ == "__main__":
