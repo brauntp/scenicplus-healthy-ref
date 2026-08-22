@@ -187,7 +187,7 @@ python 02_pair/glue_metacells.py \
     --atac                cistopic_out/imputed_accessibility.h5ad \
     --latent-key          X_glue \
     --group-key           <CELLTYPE_OBS_KEY> \
-    --cells-per-metacell  25 \
+    --cells-per-metacell  50 \
     --min-cells-per-group 50 \
     --out                 ACC_GEX.h5mu \
     --diagnostics         pairing_diagnostics
@@ -196,10 +196,26 @@ python 02_pair/glue_metacells.py \
 **Read `pairing_diagnostics.csv` before going further.** The
 `median_crossmodal_gap` column is the one that matters: a large value for a cell
 type means RNA and ATAC do not co-occupy that region of the latent space, so
-pairing there is extrapolation and any eRegulon resting on it is weak. Set
-`--cells-per-metacell` from the benchmark in `docs/pairing_benchmark.png` —
-k=50 gives the largest effect size, k=25 is more robust when integration is
-noisy.
+pairing there is extrapolation and any eRegulon resting on it is weak.
+
+**On `--cells-per-metacell`, from `docs/pairing_sensitivity.csv`:** k=50 gives
+the highest median ρ on true links at *every* noise level tested (0.599, 0.508,
+0.284, 0.144, 0.090, 0.041 as noise goes 0.15 → 2.5), and the highest AUROC at
+four of six. Larger metacells average away more modality-specific noise, so
+there is no noise regime in this sweep where a smaller k recovers more signal.
+The AUROC ordering does invert at noise ≥ 1.5 (k=10 edges k=50 at 1.5), but the
+spread across k there is only 0.058–0.069 while every k is already badly
+degraded — that is run-to-run scatter in a regime you should not be operating
+in, not a reason to pick a smaller k.
+
+The real cost of large k is **observation count**, not robustness: on the same
+input cells, k=10 → 798 metacells, k=25 → 320, k=50 → 160. Those are the rows
+the region-to-gene GBM regresses on, so k=50 buys effect size by spending
+degrees of freedom. Start at **k=50** and only drop to 25 if a cell type is too
+small to yield enough metacells for a stable fit — which `--min-cells-per-group`
+and the diagnostics CSV will tell you. If the diagnostics show a large
+cross-modal gap, that is a signal to fix the integration or exclude the cell
+type, not to change k.
 
 Then gate:
 

@@ -178,7 +178,7 @@ slurm/        *.sbatch               submit wrappers (parameterize partition/acc
 
 | parameter | default | why you might change it |
 |---|---|---|
-| `--cells-per-metacell` | 25 | Larger = less noise per metacell, fewer observations for the GBM. The benchmark shows k=50 gives the highest ρ but k=25 is more robust when integration is noisy. |
+| `--cells-per-metacell` | 25 (script default; **use 50**) | k=50 has the highest median ρ on true links at every noise level in `docs/pairing_sensitivity.csv`, so larger is better for signal. The cost is observations, not robustness: k=10/25/50 → 798/320/160 metacells for the GBM to regress on. Drop below 50 only when a cell type is too small to yield a stable fit. |
 | `--cells-per-metacell-atac` | = RNA | ATAC is sparser; a larger ATAC *k* is often justified. |
 | `--min-cells-per-group` | 50 | Below this a cell type cannot support a metacell; raise it rather than trust a thin population. |
 | `--anchor-mode` | `both` | `rna` or `atac` anchors on one modality's geometry when the other is much sparser. |
