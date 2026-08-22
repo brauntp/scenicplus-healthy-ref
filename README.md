@@ -64,17 +64,17 @@ within-type programs), where peak *i* truly drives gene *i*, and decoy pairs
 
 | pairing | median ρ, true links | median ρ, decoys | AUROC |
 |---|---|---|---|
-| SCENIC+ stock (label-random, k=25) | 0.001 | 0.001 | 0.52 |
-| GLUE-anchored (this repo, k=25) | **0.415** | 0.002 | **1.00** |
+| SCENIC+ stock (label-random, k=25) | 0.009 | −0.001 | 0.529 |
+| GLUE-anchored (this repo, k=25) | **0.490** | 0.009 | **1.000** |
 
-(Numbers above are the k=25 row at the lowest noise level; the printed run gives
-ρ=0.490 for GLUE k=25 vs ρ=0.009 for stock.)
+Both rows are `noise=0.15, k=25` from `docs/pairing_sensitivity.csv`
+(320 metacells each); regenerate with `python docs/benchmark_pairing.py`.
 
 Stock pairing is at chance — it recovers none of the within-type links, exactly
 as the code above predicts. See `docs/pairing_benchmark.png` for how this
-degrades as integration quality falls: GLUE-anchored pairing holds AUROC ≥ 0.99
-while modality-specific noise stays below ~0.6× the program scale, decays to
-~0.89 at 1.0, and approaches chance by 2.5. **Pairing quality is bounded by
+degrades as integration quality falls: GLUE-anchored pairing holds AUROC ≥ 0.987
+while modality-specific noise stays at or below 0.6× the program scale, falls to
+0.89 at noise 1.0, and reaches 0.63 at 2.5 (best k at each level). **Pairing quality is bounded by
 integration quality** — which is why the diagnostics below are not optional.
 
 ---
