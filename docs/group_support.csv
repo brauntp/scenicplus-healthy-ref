@@ -1,0 +1,25 @@
+group,rna,atac,limiting,n_limiting,indep_equiv,metacells,eff_oversample,support
+Pro-B,189833,31618,ATAC,31618,632,5058,8.0,strong
+Naive T,34223,22972,ATAC,22972,459,3675,8.0,strong
+HSC MPP,109374,22044,ATAC,22044,440,3527,8.0,strong
+CD4 Memory T,15696,14457,ATAC,14457,289,2313,8.0,strong
+CD8 Memory T,23636,13599,ATAC,13599,271,2175,8.0,strong
+Pre-B,29660,9523,ATAC,9523,190,1523,8.0,strong
+MEP,22441,7300,ATAC,7300,146,1168,8.0,strong
+LMPP,37104,7201,ATAC,7201,144,1152,8.0,strong
+Late Erythroid,9759,4565,ATAC,4565,91,730,8.0,strong
+Early GMP,29846,4376,ATAC,4376,87,700,8.0,strong
+Early Lymphoid,21656,4353,ATAC,4353,87,696,8.0,strong
+B,14488,3934,ATAC,3934,78,629,8.0,strong
+Monocyte,2976,3021,RNA,2976,59,476,8.0,strong
+Cycling Progenitor,16437,2059,ATAC,2059,41,329,8.0,strong
+Early Erythroid,10832,2001,ATAC,2001,40,320,8.0,strong
+pDC,6391,1539,ATAC,1539,30,246,8.0,strong
+NK,3518,1163,ATAC,1163,23,186,8.0,strong
+EoBasoMast Precursor,2035,556,ATAC,556,11,88,8.0,moderate
+Plasma Cell,503,561,RNA,503,10,80,8.0,moderate
+Stromal,490,6215,RNA,490,9,78,8.0,moderate
+Megakaryocyte Precursor,433,293,ATAC,293,5,60,10.2,weak
+Late GMP,853,153,ATAC,153,3,48,15.7,weak
+cDC,350,138,ATAC,138,2,44,15.9,very weak
+Pro-Monocyte,431,69,ATAC,69,1,22,15.9,very weak
