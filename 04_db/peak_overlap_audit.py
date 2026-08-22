@@ -363,6 +363,65 @@ class ChromIndex:
         self.max_width = int((self.ends - self.starts).max()) if starts.size else 0
 
 
+def read_db_regions_catalog(path: str, verbose: bool = True) -> List[str]:
+    """
+    Read DB region IDs from a pre-extracted catalog instead of the feather.
+
+    Accepts, by extension:
+      .parquet            -- columns chrom,start,end (as written by fetch_db_regions.py)
+      .csv / .tsv / .txt  -- either those same columns, or one chr:start-end per line
+      .bed                -- chrom, start, end in the first three columns
+
+    Motivation: the precomputed hg38 SCREEN rankings feather is ~33 GiB, but the
+    audit only needs its region IDs. fetch_db_regions.py pulls those from the
+    Arrow footer over an HTTP range request (~121 MB) and writes this catalog, so
+    the representability question can be answered before committing the download.
+    """
+    if not os.path.exists(path):
+        sys.exit(f"ERROR: region catalog not found: {path}")
+    ext = os.path.splitext(path)[1].lower()
+
+    def _from_frame(df):
+        cols = {c.lower(): c for c in df.columns}
+        need = [cols.get(k) for k in ("chrom", "start", "end")]
+        if all(need):
+            c, s, e = need
+            return [f"{a}:{int(b)}-{int(d)}"
+                    for a, b, d in zip(df[c], df[s], df[e])]
+        return None
+
+    ids = None
+    if ext == ".parquet":
+        try:
+            import pandas as _pd
+        except ImportError:
+            sys.exit("ERROR: pandas is required to read a .parquet catalog.")
+        ids = _from_frame(_pd.read_parquet(path))
+        if ids is None:
+            sys.exit(f"ERROR: {path} has no chrom/start/end columns.")
+    else:
+        try:
+            import pandas as _pd
+            sep = "\t" if ext in (".tsv", ".bed") else None
+            df = _pd.read_csv(path, sep=sep, engine="python")
+            ids = _from_frame(df)
+            if ids is None and ext == ".bed" and df.shape[1] >= 3:
+                ids = [f"{r[0]}:{int(r[1])}-{int(r[2])}"
+                       for r in df.itertuples(index=False)]
+        except Exception:                                     # noqa: BLE001
+            ids = None
+        if ids is None:                                      # one ID per line
+            with open(path) as fh:
+                ids = [ln.strip() for ln in fh if ln.strip() and ":" in ln]
+    if not ids:
+        sys.exit(f"ERROR: no region IDs parsed from {path}")
+    if verbose:
+        print(f"[db] region catalog {os.path.basename(path)}")
+        print(f"[db] {len(ids):,} region IDs (no feather required)")
+        print(f"[db] e.g. {', '.join(ids[:3])}")
+    return ids
+
+
 def build_db_index(region_ids: List[str], verbose: bool = True):
     """Group DB region IDs by chromosome into sorted numpy indexes."""
     by_chrom: Dict[str, Tuple[List[int], List[int]]] = {}
@@ -644,6 +703,10 @@ def main(argv=None) -> int:
                                     "BED3+ ; col4=name, col5=score if present.")
     ap.add_argument("--db", help="cisTarget *.feather (regions_vs_motifs "
                                  "rankings or scores).")
+    ap.add_argument("--db-regions", help="Region catalog instead of --db: a "
+                    "parquet/csv with chrom,start,end columns, or a text/BED "
+                    "file of chr:start-end IDs. Use this to audit WITHOUT the "
+                    "multi-GB feather on disk (see fetch_db_regions.py).")
     ap.add_argument("--out-prefix", default="peak_overlap_audit",
                     help="Output prefix for .per_peak.csv and .summary.json "
                          "(default: %(default)s)")
@@ -668,10 +731,11 @@ def main(argv=None) -> int:
     if args.self_test:
         return self_test()
 
-    missing = [f for f, v in (("--peaks", args.peaks), ("--db", args.db)) if not v]
-    if missing:
-        ap.error(f"missing required argument(s): {', '.join(missing)} "
-                 "(or pass --self-test)")
+    if not args.peaks:
+        ap.error("missing required argument: --peaks (or pass --self-test)")
+    if bool(args.db) == bool(args.db_regions):
+        ap.error("give exactly one of --db (the feather) or --db-regions "
+                 "(a pre-extracted region catalog)")
     if not 0.0 <= args.fraction_overlap < 1.0:
         ap.error("--fraction-overlap must be in [0, 1)")
 
@@ -683,7 +747,10 @@ def main(argv=None) -> int:
     print("cisTarget peak representability audit")
     print("=" * 74)
 
-    region_ids = read_db_region_ids(args.db)
+    if args.db:
+        region_ids = read_db_region_ids(args.db)
+    else:
+        region_ids = read_db_regions_catalog(args.db_regions)
     db_index, n_unparseable_db = build_db_index(region_ids)
 
     pchrom, pstart, pend, pnames, pscores, n_skipped = read_peaks_bed(args.peaks)
@@ -785,7 +852,9 @@ def main(argv=None) -> int:
     summary = {
         "inputs": {
             "peaks_bed": os.path.abspath(args.peaks),
-            "cistarget_db": os.path.abspath(args.db),
+            "cistarget_db": os.path.abspath(args.db) if args.db else None,
+            "db_regions_catalog": (os.path.abspath(args.db_regions)
+                                   if args.db_regions else None),
             "fraction_overlap": args.fraction_overlap,
             "overlap_rule": ("(overlap/len_db_region > X) OR "
                              "(overlap/len_user_peak > X), strict >, "
