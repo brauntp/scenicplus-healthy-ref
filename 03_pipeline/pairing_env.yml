@@ -1,0 +1,45 @@
+# =============================================================================
+# Minimal environment for the PAIRING step (02_pair/*.py)
+# =============================================================================
+#     mamba env create -f 03_pipeline/pairing_env.yml
+#     conda activate scplus-pairing
+#
+# Deliberately separate from 03_pipeline/environment.yml. That one pins the full
+# SCENIC+ stack -- scenicplus, pycisTopic, pycistarget, MACS2, mallet, bedtools,
+# ~900 packages with six source builds -- and takes a long time to solve and
+# build. The pairing step needs four libraries. Keeping them apart means:
+#
+#   * pairing can run before the big env exists (and if that env ever breaks,
+#     the paired .h5mu is unaffected);
+#   * this env solves in seconds with no compilation, since every pin below has
+#     a linux-64 cp311 wheel (verified against PyPI, not assumed);
+#   * the pairing output was already verified to READ correctly under the
+#     pipeline's older pinned mudata/anndata, so the version gap between the two
+#     environments is tested rather than hoped for.
+#
+# The inspectors (00_inspect/inspect_h5ad_lite.py, compare_labels.py,
+# 02_pair/attach_atac_labels.py) need h5py ONLY and do not need this env.
+# =============================================================================
+name: scplus-pairing
+
+channels:
+  - conda-forge
+
+dependencies:
+  # 3.11 to match the SCENIC+ pipeline env, so a .h5mu written here and read
+  # there is not also crossing an interpreter-version boundary.
+  - python=3.11
+  - pip
+  # From conda so they link against conda's BLAS -- the kNN step is BLAS-bound.
+  - numpy=1.26.4
+  - scipy=1.14.1
+  - pandas=2.2.3
+  - h5py=3.12.1
+  - pip:
+      # Pure-python wheels; conda-forge lags on these two.
+      - anndata==0.10.9
+      - mudata==0.3.1
+
+# Verified: these six pins co-install cleanly and run
+# 02_pair/aggregate_atac_sparse.py end to end, with the output passing
+# 03_pipeline/validate_h5mu.py.

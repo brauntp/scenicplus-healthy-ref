@@ -114,6 +114,14 @@ def main():
     ap.add_argument("--rna", type=Path, required=True)
     ap.add_argument("--latent-key", default="X_glue")
     ap.add_argument("--group-key", required=True)
+    ap.add_argument("--obs-tsv", type=Path, default=None,
+                    help="TSV of per-cell metadata to merge into the ATAC obs, "
+                         "keyed by cell id in the first column. This is how the "
+                         "transferred labels reach the ATAC object when they live "
+                         "in a sidecar file rather than in the .h5ad -- e.g. the "
+                         "output of 02_pair/attach_atac_labels.py.")
+    ap.add_argument("--obs-tsv-rna", type=Path, default=None,
+                    help="same, for the RNA object")
     ap.add_argument("--rna-layer", default=None)
     ap.add_argument("--use-raw", action="store_true")
     ap.add_argument("--cells-per-metacell", type=int, default=50)
@@ -136,6 +144,15 @@ def main():
                     help="Ceiling on the effective oversample the floor may reach. "
                          "Beyond ~16 the added metacells are near-duplicates.")
     ap.add_argument("--seed", type=int, default=666)
+    ap.add_argument("--max-dense-gb", type=float, default=0.0,
+                    help="Refuse if the metacell matrices would exceed this. Set "
+                         "it to roughly 60%% of the job's --mem so the failure is "
+                         "an immediate message rather than an OOM kill an hour "
+                         "in. 0 disables the check.")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="Plan the metacells, print the exact output shape and "
+                         "memory, then stop without aggregating or writing. Run "
+                         "this on a login node before submitting.")
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--diagnostics", type=Path, default=None)
     args = ap.parse_args()
@@ -152,6 +169,39 @@ def main():
     rna = anndata.read_h5ad(args.rna)
     _log(f"reading {args.atac} (backed)")
     atac = anndata.read_h5ad(args.atac)
+
+    # -- sidecar metadata, merged BEFORE the group-key check ------------------
+    for nm, ad_, tsv in (("RNA", rna, args.obs_tsv_rna),
+                         ("ATAC", atac, args.obs_tsv)):
+        if tsv is None:
+            continue
+        if not tsv.exists():
+            sys.exit(f"ERROR: --obs-tsv{'-rna' if nm == 'RNA' else ''} "
+                     f"{tsv} does not exist")
+        _log(f"merging {nm} metadata from {tsv}")
+        side = pd.read_csv(tsv, sep=None, engine="python", index_col=0,
+                           dtype=str)
+        side.index = side.index.astype(str)
+        shared = ad_.obs_names.intersection(side.index)
+        if len(shared) == 0:
+            sys.exit(
+                f"ERROR: no cell ids shared between {nm}.obs_names and {tsv}.\n"
+                f"  {nm}.obs_names e.g. {list(ad_.obs_names[:3])}\n"
+                f"  {tsv.name} index e.g. {list(side.index[:3])}\n"
+                "These are different id spaces. Harmonise the ids -- do NOT "
+                "drop the non-matching cells.")
+        if len(shared) < ad_.n_obs:
+            missing = ad_.n_obs - len(shared)
+            sys.exit(
+                f"ERROR: {missing:,} of {ad_.n_obs:,} {nm} cells are absent from "
+                f"{tsv.name} ({len(shared):,} matched). Refusing to proceed on a "
+                "partial merge -- silently dropping cells would bias every "
+                "group. Regenerate the TSV for all cells, or subset the .h5ad "
+                "deliberately.")
+        new = [c for c in side.columns if c not in ad_.obs.columns]
+        ad_.obs = ad_.obs.join(side.loc[ad_.obs_names, new])
+        _log(f"  merged {len(new)} column(s) for all {ad_.n_obs:,} {nm} cells: "
+             f"{new[:8]}{' ...' if len(new) > 8 else ''}")
 
     for nm, ad_, in (("RNA", rna), ("ATAC", atac)):
         if args.latent_key not in ad_.obsm:
@@ -185,7 +235,15 @@ def main():
     if only_a:
         _log(f"ATAC-only groups (dropped): {only_a}")
 
-    blocks_r, blocks_a, names, diags, dropped = [], [], [], {}, []
+    # ---------------------------------------------------------------------
+    # PHASE 1 -- plan only. Choose anchors and metacell memberships for every
+    # group WITHOUT aggregating, so the exact output shape is known before any
+    # dense memory is touched. Accumulating per-group blocks and np.vstack-ing
+    # them at the end would hold two full copies of the dense output at once
+    # (91 GB vs 51 GB on this reference); preallocating avoids that.
+    # Memberships are tiny: 25k metacells x k x 8 bytes ~ 20 MB.
+    # ---------------------------------------------------------------------
+    plan, names, diags, dropped = [], [], {}, []
     for g in groups:
         ir = np.flatnonzero(gr == g)
         ia = np.flatnonzero(ga == g)
@@ -208,8 +266,7 @@ def main():
         mem_r = knn_rows(A, Zr_g, min(k_r, len(ir)))
         mem_a = knn_rows(A, Za_g, min(k_a, len(ia)))
 
-        blocks_r.append(aggregate_sparse(X_rna[ir], mem_r))
-        blocks_a.append(aggregate_sparse(X_atac[ia], mem_a))
+        plan.append((g, ir, ia, mem_r, mem_a))
         names += [f"{g}_mc{i}" for i in range(A.shape[0])]
 
         d_r = 1.0 - (A * Zr_g[mem_r[:, 0]]).sum(1)
@@ -228,11 +285,50 @@ def main():
                     "atac_cell_reuse_mean": float(mem_a.size / max(len(ia), 1))}
         _log(f"group {g!r}: RNA {len(ir)}, ATAC {len(ia)} -> {A.shape[0]} metacells")
 
-    if not blocks_r:
+    if not plan:
         sys.exit("ERROR: every group was dropped; lower --min-cells-per-group")
 
-    M_rna = np.vstack(blocks_r)
-    M_atac = np.vstack(blocks_a)
+    # ---------------------------------------------------------------------
+    # PHASE 2 -- allocate once, fill in place.
+    # ---------------------------------------------------------------------
+    n_mc_total = sum(p[3].shape[0] for p in plan)
+    gb = n_mc_total * (X_rna.shape[1] + X_atac.shape[1]) * 4 / 1024**3
+    _log(f"allocating {n_mc_total:,} x {X_rna.shape[1]:,} (RNA) and "
+         f"{n_mc_total:,} x {X_atac.shape[1]:,} (ATAC) float32 = {gb:.1f} GB")
+    if args.max_dense_gb and gb > args.max_dense_gb:
+        sys.exit(f"ERROR: the metacell matrices need {gb:.1f} GB, above "
+                 f"--max-dense-gb {args.max_dense_gb:.1f}. Lower --oversample "
+                 f"(halving it roughly halves this), or raise the limit if the "
+                 f"job really has the memory.")
+    if args.dry_run:
+        print()
+        print(f"DRY RUN -- nothing aggregated, nothing written.")
+        print(f"  groups kept      : {len(plan)}")
+        print(f"  groups dropped   : {len(dropped)}"
+              + (f" {[d['group'] for d in dropped]}" if dropped else ""))
+        print(f"  metacells        : {n_mc_total:,}")
+        print(f"  dense output     : {gb:.1f} GB")
+        print(f"  + sparse inputs  : "
+              f"{(X_rna.data.nbytes + X_rna.indices.nbytes + X_atac.data.nbytes + X_atac.indices.nbytes)/1024**3:.1f} GB")
+        print(f"  -> request --mem at least {int(gb*1.35 + 14)}G")
+        print()
+        print("  per group: name, rna_cells, atac_cells, metacells, indep_equiv")
+        for g, ir, ia, mem_r, _ in plan:
+            base = min(len(ir), len(ia)) / max(k_r, k_a)
+            print(f"    {g:<26} {len(ir):>7,} {len(ia):>7,} "
+                  f"{mem_r.shape[0]:>6,} {int(max(1, base)):>6}")
+        return
+
+    M_rna = np.empty((n_mc_total, X_rna.shape[1]), dtype=np.float32)
+    M_atac = np.empty((n_mc_total, X_atac.shape[1]), dtype=np.float32)
+    row = 0
+    for g, ir, ia, mem_r, mem_a in plan:
+        n = mem_r.shape[0]
+        M_rna[row:row + n] = aggregate_sparse(X_rna[ir], mem_r)
+        M_atac[row:row + n] = aggregate_sparse(X_atac[ia], mem_a)
+        row += n
+        _log(f"aggregated {g!r} ({row:,}/{n_mc_total:,} metacells)")
+    assert row == n_mc_total, (row, n_mc_total)
     _log(f"metacell matrices: RNA {M_rna.shape} "
          f"({M_rna.nbytes/1024**3:.2f} GB), ATAC {M_atac.shape} "
          f"({M_atac.nbytes/1024**3:.2f} GB)")
