@@ -84,27 +84,40 @@ fi
 
 # ------------------------------------------------- 1. python with anndata
 echo
-echo "[1] python envs with anndata + mudata"
-PY_OK=()
+echo "[1] python envs with anndata / mudata"
+# Detect by looking for the package directory in site-packages, NOT by importing.
+# Importing is slow, and -- worse -- an env whose python is broken, or whose
+# anndata import raises for an unrelated reason, is indistinguishable from an
+# env that simply lacks the package. A filesystem check cannot lie in that way,
+# and it works even for envs whose interpreter will not start.
+PY_OK=(); PY_ANNDATA_ONLY=(); N_WITH_PY=0
+pkg_version() {   # prefix, package -> version string from *.dist-info, or "?"
+    local d
+    d="$(ls -d "$1"/lib/python*/site-packages/"$2"-*.dist-info 2>/dev/null | head -1)"
+    [[ -n "$d" ]] && basename "$d" | sed -E "s/^$2-(.+)\.dist-info$/\1/" || echo "?"
+}
 while read -r prefix; do
-    [[ -z "$prefix" || ! -x "$prefix/bin/python" ]] && continue
-    out="$("$prefix/bin/python" - <<'PY' 2>/dev/null
-try:
-    import anndata, importlib.metadata as md
-    a = md.version("anndata")
-    try:    m = md.version("mudata")
-    except Exception: m = None
-    print(f"anndata={a} mudata={m or 'MISSING'}")
-except Exception:
-    pass
-PY
-)"
-    if [[ -n "$out" ]]; then
-        echo "  FOUND  $prefix"
-        echo "         $out"
-        [[ "$out" == *"mudata=MISSING"* ]] || PY_OK+=("$prefix")
+    [[ -z "$prefix" ]] && continue
+    # Any python at all in this prefix?
+    compgen -G "$prefix/lib/python*/site-packages" >/dev/null 2>&1 || continue
+    N_WITH_PY=$((N_WITH_PY+1))
+    has_a=0; has_m=0
+    compgen -G "$prefix/lib/python*/site-packages/anndata" >/dev/null 2>&1 && has_a=1
+    compgen -G "$prefix/lib/python*/site-packages/mudata"  >/dev/null 2>&1 && has_m=1
+    ((has_a)) || continue
+    av="$(pkg_version "$prefix" anndata)"
+    if ((has_m)); then
+        mv="$(pkg_version "$prefix" mudata)"
+        echo "  BOTH     $prefix"
+        echo "           anndata=$av mudata=$mv"
+        PY_OK+=("$prefix")
+    else
+        echo "  anndata  $prefix"
+        echo "           anndata=$av  (no mudata -- fine for --rna/--atac input)"
+        PY_ANNDATA_ONLY+=("$prefix")
     fi
 done < <(env_prefixes_uniq)
+echo "  (scanned $N_WITH_PY prefixes containing a python site-packages)"
 
 if ((${#PY_OK[@]})); then
     echo
