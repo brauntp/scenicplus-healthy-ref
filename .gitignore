@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+*.h5ad
+*.h5mu
+*.feather
+*.pkl
+*.mtx
+.snakemake/

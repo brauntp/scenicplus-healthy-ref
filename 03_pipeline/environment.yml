@@ -1,0 +1,234 @@
+# =============================================================================
+# Conda environment for SCENIC+ v1.0a2 (+ pycisTopic, pycistarget)
+# =============================================================================
+# Create:
+#     mamba env create -f 03_pipeline/environment.yml
+#     conda activate scenicplus
+#     scenicplus --help          # smoke test: must print the CLI usage
+#     python -c "import pycisTopic, pycistarget, scenicplus; print('ok')"
+#
+# All pins below are transcribed from the pinned upstream sources:
+#     src/scenicplus/pyproject.toml     -> version, requires-python
+#     src/scenicplus/requirements.in    -> the human-authored dependency set
+#     src/scenicplus/requirements.txt   -> the pip-compile lock (918 lines)
+# pyproject.toml declares `dynamic = ["dependencies"]` with
+# `dependencies = {file = ["requirements.txt"]}`, so requirements.txt IS the
+# install manifest -- installing scenicplus pulls the whole locked set.
+#
+# -----------------------------------------------------------------------------
+# PYTHON VERSION -- READ BEFORE CHANGING
+# -----------------------------------------------------------------------------
+# pyproject.toml declares:  requires-python = ">=3.8,<=3.11.8"
+# That upper bound is INCLUSIVE and patch-level, which is unusual and easy to
+# trip over: 3.11.9 does NOT satisfy it, and pip will refuse to install with
+# "requires a different Python". Conda resolves `python=3.11` to the newest
+# 3.11.x available, which today is well past 3.11.8. So the patch pin below is
+# load-bearing -- do not relax it to `python=3.11`.
+#
+# We use 3.11.8 rather than an older 3.8-3.10 because numba==0.59.0 (pinned
+# below) is the first numba release supporting 3.12 and fully supports 3.11,
+# while several of the locked wheels (pyarrow 15, polars 0.20, ray 2.9) no
+# longer ship 3.8 builds.
+# -----------------------------------------------------------------------------
+
+name: scenicplus
+
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+
+dependencies:
+  # --- interpreter ---------------------------------------------------------
+  # LOAD-BEARING PATCH PIN: pyproject.toml's `<=3.11.8` is inclusive.
+  - python=3.11.8
+  - pip
+
+  # --- build toolchain -----------------------------------------------------
+  # Several dependencies have no wheel for every platform and are built from
+  # source at install time (MACS2, pyBigWig, pybedtools, pyranges' ncls/pyrle,
+  # scrublet's annoy). Without a compiler the pip step fails deep in a build
+  # log rather than with a useful message.
+  - c-compiler
+  - cxx-compiler
+  - make
+  - pkg-config
+  # Cython is pinned in requirements.txt at 0.29.37 -- i.e. Cython 0.x, NOT 3.x.
+  # LOAD-BEARING: MACS2 2.2.9.1 and several pyranges helpers do not build with
+  # Cython 3. Installing it from conda first keeps pip from resolving a 3.x.
+  - cython=0.29.37
+  - numpy=1.26.4        # see note in the pip section; installed early so
+                        # source builds (MACS2, scrublet) compile against it
+
+  # --- LDA topic modelling backend ----------------------------------------
+  # pycisTopic runs LDA either with the `lda` python package (collapsed Gibbs,
+  # pinned below in pip) or with Mallet. Mallet is the option that scales to
+  # real cell x region matrices, and it is a JVM application: it needs a JDK at
+  # runtime, not just at install. openjdk 11+ works; 17 is the current LTS on
+  # conda-forge and is what we pin.
+  #
+  # NOTE: the SCENIC+/pycisTopic docs generally have you download the Mallet
+  # binary release and point at it with `mallet_path=`. The conda package puts a
+  # `mallet` launcher on PATH; either is fine, but if you use the conda one,
+  # pass the resolved launcher path explicitly rather than relying on PATH
+  # inside a SLURM job. Mallet also wants a large heap -- export
+  # MALLET_MEMORY=<N>g before running topic modelling.
+  - openjdk=17
+  - mallet
+
+  # --- genomics command-line tools ----------------------------------------
+  # bedtools is a RUNTIME dependency, not just a build one: pybedtools shells
+  # out to the `bedtools` binary. If it is absent, pycisTopic region operations
+  # fail at the point of use with a "bedtools not found" that looks like a
+  # python bug.
+  - bedtools=2.31.1
+  # pybedtools/pysam/pyBigWig link against these; taking them from conda avoids
+  # source builds against whatever the cluster happens to have in /usr/lib.
+  - htslib
+  - samtools
+  - zlib
+  - curl
+  - bzip2
+  - xz
+
+  # --- HDF5 ----------------------------------------------------------------
+  # h5py is pinned at 3.10.0 in requirements.txt; pulling the libhdf5 it links
+  # against from conda keeps the .h5mu / .h5ad / .hdf5 I/O consistent between
+  # the pipeline and any downstream analysis env.
+  - hdf5
+
+  # --- workflow engine -----------------------------------------------------
+  # requirements.txt pins snakemake==8.5.5, so it is installed as a scenicplus
+  # dependency anyway. We list it from bioconda as well because the conda build
+  # brings a working `datrie` -- on macOS and some cluster images the pip sdist
+  # for datrie fails to build. Version kept identical to the pin so the two
+  # cannot disagree.
+  - snakemake-minimal=8.5.5
+
+  # --- pip section ---------------------------------------------------------
+  - pip:
+      # ---------------------------------------------------------------------
+      # MUST be installed from git: these four have no PyPI release that
+      # matches what scenicplus v1.0a2 expects. requirements.in / .txt declare
+      # them as direct VCS references:
+      #     pycistarget @ git+https://github.com/aertslab/pycistarget
+      #     pycistopic  @ git+https://github.com/aertslab/pycisTopic
+      #     loomxpy     @ git+https://github.com/aertslab/LoomXpy@main
+      #     pyscenic    @ git+https://github.com/aertslab/pySCENIC@master
+      #
+      # Note what that means for reproducibility: upstream pins these to
+      # MOVING refs (default branch / @main / @master), so `git+` today and
+      # `git+` in six months are not the same code. We therefore record the
+      # commit we actually installed rather than trusting the branch. Fill the
+      # <...> pins in from the first successful install:
+      #     pip list --format=freeze | grep -Ei 'pycistarget|pycistopic|loomxpy|pyscenic'
+      # and replace the refs below with @<commit>. Until then these are branch
+      # tips and the env is NOT reproducible.
+      # ---------------------------------------------------------------------
+      - pycistarget @ git+https://github.com/aertslab/pycistarget@<COMMIT_SHA>
+      - pycisTopic @ git+https://github.com/aertslab/pycisTopic@<COMMIT_SHA>
+      - loomxpy @ git+https://github.com/aertslab/LoomXpy@<COMMIT_SHA>
+      - pyscenic @ git+https://github.com/aertslab/pySCENIC@<COMMIT_SHA>
+
+      # --- SCENIC+ itself, at the version this repo is written against -----
+      # There is no scenicplus wheel on PyPI for 1.0a2; install from the tag.
+      # Installing this pulls all of requirements.txt (918 pinned lines), so the
+      # explicit pins below are not strictly required -- they are listed because
+      # they are the ones that actually matter, and pinning them here makes a
+      # silent resolver drift visible at env-create time instead of at runtime.
+      - scenicplus @ git+https://github.com/aertslab/scenicplus@v1.0a2
+
+      # --- load-bearing pins from requirements.txt -------------------------
+      # numpy 1.x, NOT 2.x. numba==0.59.0 requires numpy<1.27, and the whole
+      # locked stack (pyarrow 15, ray 2.9, scanpy 1.8.2) predates the NumPy 2
+      # ABI break. Installing numpy>=2 gives "module compiled against API
+      # version 0x10 but this version of numpy is 0x..." at import.
+      - numpy==1.26.4
+      # pandas 1.5.0, NOT 2.x. This is the single most consequential pin in the
+      # stack. pycisTopic and the scenicplus data-wrangling code use pandas 1.x
+      # behaviour that changed in 2.0 -- notably .append on DataFrames and
+      # positional .loc semantics. Under pandas 2 the failures are late and
+      # sometimes silent.
+      - pandas==1.5.0
+      # pyranges 0.0.111 (the pre-1.0 API). pyranges 1.x is a rewrite with a
+      # different API; get_search_space and the region overlap helpers are
+      # written against 0.0.x. Its companions must match.
+      - pyranges==0.0.111
+      - pyrle==0.0.39
+      - ncls==0.0.68
+      # scanpy 1.8.2 is old relative to anndata 0.10.5.post1, but this is the
+      # combination upstream locked and tested. Do not bump scanpy alone.
+      - scanpy==1.8.2
+      - anndata==0.10.5.post1
+      # mudata 0.2.3 -- the .h5mu reader/writer used for the hand-off file.
+      # LOAD-BEARING for us specifically: 02_pair/glue_metacells.py writes the
+      # paired MuData and validate_h5mu.py reads it back, so both must agree
+      # with what scenicplus reads. mudata 0.3+ changes obs/var propagation
+      # defaults between MuData and its modalities.
+      - mudata==0.2.3
+      - h5py==3.10.0
+      - scipy==1.12.0
+      - scikit-learn==1.3.2
+      - numba==0.59.0
+      # arboreto + ctxcore are the GRN-inference engines behind tf_to_gene and
+      # the cisTarget recovery step. dask/distributed must stay matched
+      # (2024.2.1 for both) or arboreto's dask graph submission breaks.
+      - arboreto==0.1.6
+      - ctxcore==0.2.0
+      - dask==2024.2.1
+      - distributed==2024.2.1
+      - ray==2.9.3
+      # LDA fallback if you do not use Mallet.
+      - lda==3.0.0
+      - gensim==4.3.2
+      - tmtoolkit==0.12.0
+      # matplotlib is pinned OLD (3.6.3) upstream; plotnine 0.12.4 and the
+      # pycisTopic plotting helpers depend on pre-3.7 behaviour.
+      - matplotlib==3.6.3
+      - seaborn==0.13.2
+      - MACS2==2.2.9.1
+      - pybedtools==0.9.1
+      - pyBigWig==0.3.22
+      - pybiomart==0.2.0
+      - pysam==0.22.0
+      - polars==0.20.13
+      - pyarrow==15.0.0
+      - pyarrow-hotfix==0.6
+      - tspex==0.6.3
+      - networkx==3.2.1
+      - statsmodels==0.14.1
+      - tqdm==4.66.2
+
+# =============================================================================
+# NOTES / KNOWN FRICTION
+# =============================================================================
+# 1. Install order matters. `mamba env create` installs the conda section
+#    first, then runs pip once. Because numpy and Cython are pinned in the
+#    conda section at the same versions pip wants, the source builds (MACS2,
+#    pyBigWig, annoy) compile against the right headers. If you instead install
+#    pip packages piecemeal after the fact, pip may transiently upgrade numpy
+#    and leave you with a mismatched numba.
+#
+# 2. `pip check` after creation is worth the 5 seconds. requirements.txt is a
+#    pip-compile lock of ~918 lines; the four git dependencies are NOT locked
+#    (moving refs), so they are where a fresh install can pull an incompatible
+#    transitive pin.
+#
+# 3. On ARC, create the env on a filesystem visible to compute nodes and set
+#    CONDA_PKGS_DIRS somewhere with space -- the pip source builds plus the
+#    conda package cache run to several GB. Do not create it in $HOME if $HOME
+#    is quota'd.
+#
+# 4. This env intentionally does NOT include scGLUE. The scGLUE co-embedding
+#    and the metacell pairing in 02_pair/glue_metacells.py live in a separate
+#    env: scGLUE wants torch and a newer pandas/numpy than the pins above allow,
+#    and forcing them into one env breaks the pandas==1.5.0 constraint that
+#    pycisTopic depends on. Keep them separate and hand off via the .h5mu file.
+#
+# 5. No rule in the Snakefile declares a `conda:` directive, so snakemake does
+#    NOT manage per-rule environments -- every rule shells out to whatever
+#    `scenicplus` is on PATH. That means this env must be activated in the
+#    sbatch script BEFORE snakemake is launched, and it is why
+#    --rerun-triggers mtime (which drops the software-env trigger) costs us
+#    nothing.
+# =============================================================================

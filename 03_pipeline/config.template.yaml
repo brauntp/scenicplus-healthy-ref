@@ -1,0 +1,459 @@
+# =============================================================================
+# SCENIC+ v1.0a2 pipeline configuration  --  TEMPLATE
+# =============================================================================
+# Verified against the pinned upstream source:
+#   src/scenicplus/src/scenicplus/snakemake/Snakefile
+#   src/scenicplus/src/scenicplus/snakemake/config.yaml
+#   src/scenicplus/src/scenicplus/cli/scenicplus.py   (argparse types/defaults)
+#   src/scenicplus/src/scenicplus/cli/commands.py     (what each rule actually does)
+#
+# Every key below is read by the Snakefile. The Snakefile performs 151
+# `config[...][...]` lookups over exactly 67 distinct two-level keys; all 67 are
+# present here, and no key here is unread by the Snakefile at some point in the
+# DAG. (Nothing in the upstream config.yaml is *globally* dead. Several fields
+# are, however, BRANCH-DEAD -- they are only evaluated on one side of an `if`.
+# Those are flagged "BRANCH-DEAD (...)" inline; see the notes at the bottom.)
+#
+# -----------------------------------------------------------------------------
+# READ THIS FIRST: WHY prepare_GEX_ACC NEVER RUNS IN THIS REPO
+# -----------------------------------------------------------------------------
+# Our data are UNPAIRED scRNA-seq and scATAC-seq, co-embedded with scGLUE. We do
+# NOT use SCENIC+'s built-in non-multiome path, and `is_multiome` below is a
+# no-op for us because the rule that consumes it is never scheduled.
+#
+# The reason is a correctness problem, not a preference. In
+#   scenicplus/data_wrangling/adata_cistopic_wrangling.py
+#     :: process_non_multiome_data()
+# metacells are built by calling
+#   scenicplus/utils.py :: generate_pseudocells_for_numpy()
+# once for RNA (grouper_EXP) and once, INDEPENDENTLY, for ATAC (grouper_ACC).
+# Inside that function each metacell is formed as
+#       random.seed(x); sample_idx = sample(list(idx), n_cell)
+# i.e. a uniform random draw of `n_cell` cells from within the categorical label
+# `key_to_group_by`. The RNA draw and the ATAC draw share only the *label* and
+# the *seed index* -- they do not share cells, neighbourhoods, or any latent
+# coordinate. Metacell `Bcell_7` in scRNA and metacell `Bcell_7` in scATAC are
+# two unrelated random subsets of B cells that get stapled into the same MuData
+# row. The `assert meta_cell_names_ACC == meta_cell_names_EXP` in that module
+# checks only that the NAMES line up; it says nothing about the cells behind
+# them.
+#
+# This matters because every quantitative step downstream correlates the two
+# matrices ROW-BY-ROW:
+#   cli/commands.py :: infer_region_to_gene
+#       calculate_regions_to_genes_relationships(
+#           df_exp_mtx = mdata["scRNA"].to_df(),
+#           df_acc_mtx = mdata["scATAC"].to_df(), ...)
+#   enhancer_to_gene.py :: _score_regions_to_genes
+#       EXP = df_exp_mtx[gene_names].to_numpy(); ACC = df_acc_mtx.to_numpy()
+#       -> GBM regression of gene i's expression on accessibility of its
+#          candidate regions, across rows; and Spearman rho across the same rows.
+# Random within-label pairing preserves the between-cell-type signal (both
+# modalities still carry the label mean) and destroys the WITHIN-cell-type
+# covariation, which is precisely the signal region-to-gene is supposed to
+# measure. The result is an eGRN whose links are driven by cell-type identity
+# rather than by co-variation of enhancer accessibility with target expression.
+#
+# Instead, 02_pair/glue_metacells.py (upstream of this pipeline; already written
+# -- do not rewrite it) builds metacells in the shared scGLUE latent space so
+# that each row is a genuinely matched RNA/ATAC neighbourhood, and writes the
+# paired MuData directly. We drop that file at
+#   output_data.combined_GEX_ACC_mudata
+# BEFORE invoking Snakemake. Because that path is the `output:` of
+# prepare_GEX_ACC_{multiome,non_multiome} and the `input:` of everything after
+# it, Snakemake sees the file already present and treats the rule as satisfied
+# -- it never runs, and neither prepare_GEX_ACC code path is ever entered. This
+# is also why run_pipeline.sh passes `--rerun-triggers mtime`: see the comment
+# in that script.
+#
+# The MuData we hand over MUST use the modality keys "scRNA" and "scATAC"
+# exactly (string literals, indexed in cli/commands.py at lines 549, 558, 662,
+# 663, 691, 740-741, 958-959 and in scenicplus_mudata.py:35-36). Run
+# 03_pipeline/validate_h5mu.py to gate this before submitting.
+# =============================================================================
+
+
+input_data:
+  # -- cisTopic object (.pkl) from pycisTopic. ONLY consumed by
+  #    prepare_GEX_ACC_{multiome,non_multiome}, which we bypass. Snakemake still
+  #    evaluates this string when building the DAG, so it must be a real,
+  #    existing path or the DAG build fails on a missing input. Point it at the
+  #    cisTopic object you actually built in 01_atac/ -- it is cheap and it keeps
+  #    provenance honest. BRANCH-DEAD for us (rule never fires).
+  cisTopic_obj_fname: "<ABS_PATH>/01_atac/cistopic_obj.pkl"
+
+  # -- scRNA AnnData (.h5ad). Same story as above: read only by the bypassed
+  #    prepare_GEX_ACC rule, but must exist for the DAG to build.
+  #    BRANCH-DEAD for us.
+  GEX_anndata_fname: "<ABS_PATH>/00_rna/rna_processed.h5ad"
+
+  # -- Directory of region sets for motif enrichment. Layout expected by
+  #    cli/commands.py:216-224: region_set_folder/<SUBFOLDER>/*.bed -- one
+  #    SUBDIRECTORY per region-set family (e.g. "topics_otsu",
+  #    "topics_top_3k", "DARs_cell_type"), each holding one .bed per set.
+  #    Loose .bed files at the top level are IGNORED (only directories are
+  #    scanned). This is the single biggest driver of cisTarget/DEM runtime:
+  #    every .bed becomes one enrichment run.
+  region_set_folder: "<ABS_PATH>/01_atac/region_sets"
+
+  # -- cisTarget RANKING database (.regions_vs_motifs.rankings.feather).
+  #    Used twice: by motif_enrichment_cistarget, and again as
+  #    --ranking_db_fname by both eGRN rules (the GSEA recovery step ranks
+  #    cistrome regions against it). It is loaded ENTIRELY INTO RAM and is the
+  #    dominant memory term of the whole pipeline -- a human v10 SCREEN
+  #    regions-vs-motifs ranking is ~1.1M regions x ~34k motifs. Size this
+  #    against the sbatch --mem, not the other way round.
+  ctx_db_fname: "<ABS_PATH>/resources/cistarget_db/<DB_PREFIX>.regions_vs_motifs.rankings.feather"
+
+  # -- DEM SCORES database (.regions_vs_motifs.scores.feather). NOTE: DEM needs
+  #    the *scores* file, cisTarget needs the *rankings* file. They are
+  #    different files from the same database build; swapping them fails late.
+  dem_db_fname: "<ABS_PATH>/resources/cistarget_db/<DB_PREFIX>.regions_vs_motifs.scores.feather"
+
+  # -- Motif-to-TF annotation table (motifs-v10nr_clust-nr.hgnc-m0.001-o0.0.tbl
+  #    for human). Must match `params_motif_enrichment.annotation_version`
+  #    below and the motif collection the databases were built from.
+  path_to_motif_annotations: "<ABS_PATH>/resources/motif_annotations/motifs-v10nr_clust-nr.hgnc-m0.001-o0.0.tbl"
+
+
+output_data:
+  # ---------------------------------------------------------------------------
+  # All 15 outputs the Snakefile knows about. Relative paths resolve against
+  # Snakemake's working directory (`--directory`, set by run_pipeline.sh), so
+  # keep them relative and let the driver decide where the run lands.
+  # ---------------------------------------------------------------------------
+
+  # *** THE HAND-OFF POINT. *** This is the `output:` of the prepare_GEX_ACC
+  # rules and the `input:` of prepare_menr, get_search_space, tf_to_gene,
+  # region_to_gene, AUCell_direct, AUCell_extended and scplus_mudata.
+  # 02_pair/glue_metacells.py must have written the paired MuData HERE before
+  # `snakemake` is invoked. Modalities must be exactly "scRNA" and "scATAC".
+  combined_GEX_ACC_mudata: "ACC_GEX.h5mu"
+
+  # Motif enrichment results (hdf5 pickles of pycistarget result objects).
+  dem_result_fname: "dem_results.hdf5"
+  ctx_result_fname: "ctx_results.hdf5"
+  # HTML report per enrichment run. Both are unconditional `output:` entries
+  # (the Snakefile always passes --write_html), so they are not optional.
+  output_fname_dem_html: "dem_results.html"
+  output_fname_ctx_html: "ctx_results.html"
+
+  # Cistromes from prepare_menr, as .h5ad (regions x TFs).
+  # "direct"   = motif->TF link from direct annotation only
+  # "extended" = link inferred via orthology/similarity as well
+  cistromes_direct: "cistromes_direct.h5ad"
+  cistromes_extended: "cistromes_extended.h5ad"
+
+  # Newline-delimited TF names. Computed as the intersection of the cistrome
+  # TFs with set(mdata["scRNA"].var_names) (commands.py:554-558) -- so a TF
+  # missing or misnamed in your RNA var_names silently drops out of the entire
+  # analysis. Check the line count of this file against expectation.
+  tf_names: "tf_names.txt"
+
+  # download_genome_annotations outputs (pybiomart -> tsv). Requires outbound
+  # network from the compute node; see the note in slurm/scenicplus.sbatch.
+  genome_annotation: "genome_annotation.tsv"
+  chromsizes: "chromsizes.tsv"
+
+  # Per-gene candidate region list. Also the choke point for region_to_gene
+  # cost: rows here ~= number of GBM fits to run.
+  search_space: "search_space.tsv"
+
+  # Adjacency tables.
+  tf_to_gene_adjacencies: "tf_to_gene_adj.tsv"
+  region_to_gene_adjacencies: "region_to_gene_adj.tsv"
+
+  # eRegulon metadata tables (one run per cistrome flavour).
+  eRegulons_direct: "eRegulon_direct.tsv"
+  eRegulons_extended: "eRegulons_extended.tsv"
+
+  # AUCell enrichment MuData. Internally these carry modalities "Gene_based"
+  # and "Region_based" (commands.py:961-965) -- do not confuse with scRNA/scATAC.
+  AUCell_direct: "AUCell_direct.h5mu"
+  AUCell_extended: "AUCell_extended.h5mu"
+
+  # FINAL TARGET (`rule all`). A ScenicPlusMuData whose modalities are renamed
+  # to scRNA_counts / scATAC_counts / {direct,extended}_{gene,region}_based_AUC,
+  # with eRegulon metadata in .uns (scenicplus_mudata.py:34-52).
+  scplus_mdata: "scplusmdata.h5mu"
+
+
+params_general:
+  # -- Scratch directory. Used as the cisTarget/DEM temp dir AND as joblib's
+  #    `temp_folder` for the region_to_gene and tf_to_gene parallel maps
+  #    (enhancer_to_gene.py:221). joblib memory-maps large arrays through here,
+  #    so this must be FAST NODE-LOCAL DISK with tens of GB free -- never $HOME,
+  #    never a shared parallel filesystem if you can avoid it.
+  #
+  #    LEAVE THIS EMPTY for cluster runs. An empty value makes run_pipeline.sh
+  #    fill it from $TMPDIR in the resolved config, and slurm/scenicplus.sbatch
+  #    points $TMPDIR at the per-job node-local scratch it creates and cleans up.
+  #    Hardcoding a path here instead means the config and the sbatch script can
+  #    silently disagree about where the temp files go. Set an explicit path only
+  #    for interactive/local runs where no $TMPDIR is exported.
+  temp_dir: ""
+
+  # -- Thread count. Feeds BOTH `threads:` on every parallel rule AND the
+  #    --n_cpu passed to the CLI. run_pipeline.sh overwrites this with its
+  #    --cores value and writes a resolved copy, so leave it as the placeholder
+  #    and set the real number once, in the sbatch script.
+  n_cpu: <N_CPU>
+
+  # -- RNG seed. Reaches DEM's background-region sampling, the arboreto GBM
+  #    regressors in tf_to_gene, and GSEA permutations in the eGRN rules.
+  #    Keep fixed for reproducibility; change only to test stability.
+  seed: 666
+
+
+params_data_preparation:
+  # ---- prepare_GEX_ACC (BYPASSED -- see header) ----------------------------
+  # These four are read when the DAG is built but never used, because the
+  # prepare_GEX_ACC rule is pre-satisfied by our hand-built h5mu.
+
+  # Barcode remapper, injected verbatim into the shell command. The double
+  # quoting is load-bearing: the YAML value must arrive at argparse still
+  # wrapped in shell quotes, because cli/scenicplus.py passes it through
+  # `_function()` -> eval. Leave exactly as-is.
+  bc_transform_func: "\"lambda x: f'{x}'\""
+
+  # Selects which prepare_GEX_ACC rule is DEFINED (Snakefile:10). Set True.
+  # Rationale: with True, the defined-but-never-run rule is the multiome one,
+  # whose shell command does not reference key_to_group_by /
+  # nr_cells_per_metacells -- it keeps the random-metacell code path out of the
+  # workflow graph entirely, so nobody can accidentally trigger it by deleting
+  # the h5mu. Setting False here would wire up the very code path documented in
+  # the header as incorrect for unpaired data.
+  is_multiome: True
+
+  # Only read by the non-multiome rule (is_multiome: False). BRANCH-DEAD here.
+  # Recorded for provenance: this is the label our GLUE metacells respect.
+  key_to_group_by: "<CELLTYPE_OBS_KEY>"
+  # Only read by the non-multiome rule. BRANCH-DEAD here.
+  nr_cells_per_metacells: 10
+
+  # ---- prepare_menr --------------------------------------------------------
+  # Which annotation columns of the motif-annotation table count as "direct"
+  # vs "extended" evidence for a motif->TF assignment. Must be a subset of
+  # params_motif_enrichment.annotations_to_use below, or the cistromes come
+  # back empty. Defaults match the v10nr_clust table's column names.
+  direct_annotation: "Direct_annot"
+  extended_annotation: "Orthology_annot"
+
+  # ---- download_genome_annotations ----------------------------------------
+  # pybiomart species slug (NOT the same vocabulary as
+  # params_motif_enrichment.species below -- "hsapiens" here,
+  # "homo_sapiens" there. Getting these crossed is a common failure.)
+  species: "hsapiens"
+  # Pin a dated Ensembl archive rather than www.ensembl.org if you need the run
+  # to be reproducible a year from now; the live host tracks the current release
+  # and gene coordinates move between releases.
+  biomart_host: "http://www.ensembl.org"
+
+  # ---- get_search_space ----------------------------------------------------
+  # Two-number strings, splatted into argparse `nargs=2, type=int`
+  # (scenicplus.py:237-262): "MIN MAX".
+  #   MIN = always taken, even if another gene sits inside it
+  #   MAX = hard ceiling on the search distance
+  # TRADEOFF: the region set per gene grows roughly linearly with MAX, and
+  # region_to_gene fits one GBM per (gene x its candidate regions) block, so
+  # runtime and the number of testable links scale with it. Widening to
+  # 250-500 kb catches long-range enhancers (relevant for lineage TFs in AML)
+  # at the cost of more false positives to threshold away and materially longer
+  # region_to_gene; narrowing to ~50 kb makes the run cheap and promoter-biased.
+  # 150 kb is the upstream default and the defensible middle -- keep it unless
+  # you have a specific long-range locus in mind.
+  search_space_upstream: "1000 150000"
+  search_space_downstream: "1000 150000"
+  # Promoter window around the TSS, "UPSTREAM DOWNSTREAM" in bp. Only matters
+  # if you enable --remove_promoters, which the Snakefile does NOT (so this is
+  # effectively cosmetic in this workflow). Note that the Snakefile also never
+  # passes --use_gene_boundaries, so the search space always runs the full MAX
+  # distance regardless of neighbouring genes.
+  search_space_extend_tss: "10 10"
+
+
+params_motif_enrichment:
+  # pycistarget/pycisTarget species slug -- one of homo_sapiens,
+  # mus_musculus, drosophila_melanogaster (commands.py:166-168). Distinct
+  # vocabulary from params_data_preparation.species.
+  species: "homo_sapiens"
+
+  # Motif annotation version; must match the .tbl at
+  # input_data.path_to_motif_annotations.
+  annotation_version: "v10nr_clust"
+
+  # Motif-similarity FDR for accepting a similarity-based (extended) motif->TF
+  # link. Lower = stricter. 0.001 is the standard cisTarget setting.
+  motif_similarity_fdr: 0.001
+
+  # Minimum orthologous identity for accepting an orthology-based link.
+  # 0.0 accepts any orthology call in the table; raise toward 0.8 if you want
+  # only close orthologs contributing to extended cistromes.
+  orthologous_identity_threshold: 0.0
+
+  # Space-separated annotation columns to harvest from the .tbl. Must cover
+  # both params_data_preparation.direct_annotation and .extended_annotation.
+  annotations_to_use: "Direct_annot Orthology_annot"
+
+  # ---- DEM ----------------------------------------------------------------
+  # Minimum fraction of a query region's bp that must overlap a database region
+  # for the database region to be used. 0.4 = upstream default. Raise if your
+  # peaks are much wider than the database's regions and you are getting
+  # promiscuous matches.
+  fraction_overlap_w_dem_database: 0.4
+  # Number of background regions sampled per foreground set. More background =
+  # more stable log2FC/p-values, linearly more compute. 500 is the default.
+  dem_max_bg_regions: 500
+  # If True, the background is promoter-balanced against the foreground, which
+  # requires the genome annotation -- and this is the ONLY reason
+  # download_genome_annotations is an upstream dependency of DEM
+  # (Snakefile:92-98). Setting this False removes that edge (and makes
+  # dem_promoter_space dead). Keep True: promoter/enhancer composition
+  # differences otherwise dominate DEM's differential motif signal.
+  dem_balance_number_of_promoters: True
+  # bp around a TSS counted as "promoter" for that balancing. Read only when
+  # the flag above is True.
+  dem_promoter_space: 1_000
+  # DEM significance filters on the returned motif table.
+  dem_adj_pval_thr: 0.05        # BH-adjusted p ceiling
+  dem_log2fc_thr: 1.0           # min log2 fold-change fg vs bg
+  dem_mean_fg_thr: 0.0          # min mean foreground score (0 = off)
+  dem_motif_hit_thr: 3.0        # min CRM score for a region to count as a hit
+
+  # ---- cisTarget ----------------------------------------------------------
+  # As fraction_overlap_w_dem_database, but against the rankings database.
+  fraction_overlap_w_ctx_database: 0.4
+  # Fraction of the ranking used as the AUC integration window. 0.005 = top
+  # 0.5% of ranked regions. Raising it makes the statistic less top-heavy and
+  # less sensitive to strong single motifs.
+  ctx_auc_threshold: 0.005
+  # NES cutoff for calling a motif enriched. 3.0 is the cisTarget convention;
+  # lower to ~2.5 only if you are recovering too few cistromes and are willing
+  # to accept more noise.
+  ctx_nes_threshold: 3.0
+  # Fraction of the ranking retained when building the recovery curve.
+  ctx_rank_threshold: 0.05
+
+
+params_inference:
+  # ---- tf_to_gene ---------------------------------------------------------
+  # Regressor for TF-expression -> target-expression importance, via arboreto.
+  # "GBM" (gradient boosting) or "RF". GBM is the SCENIC/SCENIC+ default and is
+  # substantially cheaper than RF at this scale.
+  tf_to_gene_importance_method: "GBM"
+
+  # ---- region_to_gene -----------------------------------------------------
+  # Importance regressor for accessibility -> expression: "GBM", "RF", or "ET".
+  # This is the single most expensive step of the pipeline: one fit per gene,
+  # over all its candidate regions, across the N metacell rows of the paired
+  # MuData (enhancer_to_gene.py:214-227, parallelised with joblib over n_cpu
+  # and spilling to params_general.temp_dir).
+  region_to_gene_importance_method: "GBM"
+  # Correlation used to sign the link: "SR" (Spearman) or "PR" (Pearson).
+  # SR is the default and the right choice with metacell-averaged counts.
+  # NOTE: the Snakefile never passes --mask_expr_dropout, so dropout masking is
+  # off; with GLUE metacells (already averaged) that is what you want.
+  region_to_gene_correlation_method: "SR"
+
+  # ---- eGRN inference (both direct and extended rules) --------------------
+  # Column used to rank region-to-gene and TF-to-gene links before GSEA.
+  # "importance" (regressor score) or a correlation column such as
+  # "importance_x_abs_rho".
+  order_regions_to_genes_by: "importance"
+  order_TFs_to_genes_by: "importance"
+
+  # GSEA permutations for the enhancer-recovery test. 1000 is the default;
+  # raising it improves p-value resolution at linear cost and is rarely the
+  # binding constraint.
+  gsea_n_perm: 1000
+
+  # ---- region-to-gene link thresholding -----------------------------------
+  # SCENIC+ does not pick one cutoff. It builds a candidate region set per gene
+  # under EVERY threshold listed below, then keeps whichever eRegulon survives
+  # GSEA. So these are a menu, not a choice, and the cost of the eGRN step
+  # scales with the total number of entries across the three fields.
+  #
+  # Quantile thresholds on the ordering column, as a space-separated string
+  # (argparse nargs="*", type=float). "0.85 0.90 0.95" = keep the top 15%/10%/5%
+  # of links. TRADEOFF: quantiles adapt to the score distribution and so behave
+  # sensibly across genes with very different numbers of candidate regions, but
+  # they guarantee that some links pass for every gene, including genes with no
+  # real signal.
+  quantile_thresholds_region_to_gene: "0.85 0.90 0.95"
+  # Top-N per GENE (nargs="*", type=int). TRADEOFF: complements the quantiles by
+  # imposing an absolute cap -- a gene with 400 candidate regions cannot
+  # contribute 60 links through the 0.85 quantile if a top-5/10/15 set is also
+  # in play. Cheap and interpretable, but insensitive to how strong the links
+  # actually are.
+  top_n_regionTogenes_per_gene: "5 10 15"
+  # Top-N per REGION. Empty string = disabled (argparse default is []). Enable
+  # (e.g. "5 10") only if you specifically want to bound how many genes a single
+  # enhancer may be assigned to; it roughly doubles the number of threshold
+  # variants the eGRN step must evaluate.
+  top_n_regionTogenes_per_region: ""
+
+  # Drop genes with fewer than this many candidate regions after thresholding.
+  # 0 = keep all.
+  min_regions_per_gene: 0
+
+  # |rho| cutoff separating positive from negative links when SCENIC+
+  # dichotomises by correlation (the Snakefile leaves rho-dichotomisation ON
+  # for TF2G, R2G and eRegulons -- it never passes the --do_not_* flags).
+  # Raising this makes activator/repressor calls more conservative and shrinks
+  # both eRegulon sets.
+  rho_threshold: 0.05
+
+  # Minimum target genes for an eRegulon to be reported. 10 is the default;
+  # this is the main knob on how many eRegulons you get out. Lowering it to ~5
+  # surfaces small, specific programs at the cost of noise.
+  min_target_genes: 10
+
+
+# =============================================================================
+# APPENDIX: fields that are NOT dead globally, but are dead on OUR branch
+# =============================================================================
+# The Snakefile has three config-driven branch points. Nothing in the upstream
+# config.yaml is unread in every configuration, but the following are never
+# read given the settings above:
+#
+#   Branch: params_data_preparation.is_multiome  (Snakefile:10)
+#     is_multiome True  -> prepare_GEX_ACC_multiome defined; the following are
+#                          never read:
+#                            params_data_preparation.key_to_group_by
+#                            params_data_preparation.nr_cells_per_metacells
+#     Additionally, because we PRE-SATISFY output_data.combined_GEX_ACC_mudata,
+#     the rule never executes at all, which also makes these unused:
+#                            input_data.cisTopic_obj_fname
+#                            input_data.GEX_anndata_fname
+#                            params_data_preparation.bc_transform_func
+#     (They must still resolve to existing paths / valid strings, because
+#     Snakemake evaluates them while constructing the DAG.)
+#
+#   Branch: params_motif_enrichment.dem_balance_number_of_promoters
+#           (Snakefile:92)
+#     True  -> DEM gains an input edge on output_data.genome_annotation and
+#              reads params_motif_enrichment.dem_promoter_space.
+#     False -> dem_promoter_space is never read.
+#
+#   Not a config branch, but worth knowing: the Snakefile hard-codes several
+#   CLI flags and never exposes them in config -- --write_html (always on),
+#   --use_gene_boundaries / --remove_promoters (never passed, so always off),
+#   --mask_expr_dropout (never passed), --do_not_binarize_using_basc and the
+#   --do_not_rho_dichotomize_* / --keep_only_activating_eRegulons flags (never
+#   passed, so BASC binarisation and rho dichotomisation are always on and both
+#   activating and repressive eRegulons are kept), --nr_metacells, and
+#   --do_not_use_raw_for_GEX_anndata. Changing any of those requires editing the
+#   Snakefile, not this file.
+#
+# One more Snakemake detail worth recording: the upstream Snakefile hard-codes
+#   configfile: "config/config.yaml"
+# on line 3. Passing --configfile on the command line is nonetheless safe and
+# is what run_pipeline.sh does: snakemake/workflow.py:1454-1473 raises only if
+# the hard-coded path is missing AND no --configfile was supplied. When
+# --configfile IS supplied, a missing config/config.yaml falls through to
+# `update_config(self.config, self.config_settings.overwrite_config)`. But note
+# the other half of that branch: if a file happens to exist at
+# ./config/config.yaml relative to the working directory, it is loaded FIRST and
+# then overlaid by our --configfile. Since this template sets every key, ours
+# wins -- but do not leave a stray config/config.yaml in the run directory.
+# =============================================================================
