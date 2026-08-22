@@ -163,6 +163,78 @@ def aggregate(X, idx_list, how="mean"):
     return out
 
 
+# ------------------------------------------------- sidecar TSV loaders
+def _read_tsv_indexed(path, what):
+    """Read a TSV whose first column is the cell id. Sniffs the separator."""
+    import pandas as pd
+    if not Path(path).exists():
+        sys.exit(f"ERROR: {what} file not found: {path}")
+    sep = "\t"
+    with open(path) as fh:
+        head = fh.readline()
+    if "\t" not in head and "," in head:
+        sep = ","
+    df = pd.read_csv(path, sep=sep, index_col=0, low_memory=False)
+    df.index = df.index.astype(str)
+    if df.index.has_duplicates:
+        n = int(df.index.duplicated().sum())
+        sys.exit(f"ERROR: {path} has {n} duplicate cell ids in its index.")
+    return df
+
+
+def latent_from_tsv(path, obs_names, modality):
+    """
+    Pull a GLUE embedding out of a TSV for exactly the cells in `obs_names`.
+
+    Accepts a combined file covering both modalities: rows are selected by cell
+    id, so an RNA object takes its rows and an ATAC object takes its own. Only
+    numeric columns are used, so a stray label column is tolerated.
+    """
+    import pandas as pd
+    df = _read_tsv_indexed(path, f"{modality} latent TSV")
+    num = df.select_dtypes(include=[np.number])
+    if num.shape[1] == 0:
+        sys.exit(f"ERROR: {path} has no numeric columns to use as latent dims.")
+    if num.shape[1] < df.shape[1]:
+        dropped = [c for c in df.columns if c not in num.columns]
+        _log(f"latent TSV: ignoring {len(dropped)} non-numeric column(s): "
+             f"{dropped[:5]}{' ...' if len(dropped) > 5 else ''}")
+    want = pd.Index([str(x) for x in obs_names])
+    missing = want.difference(num.index)
+    if len(missing):
+        sys.exit(f"ERROR: {len(missing)} of {len(want)} {modality} cells are absent "
+                 f"from {path}.\n       First few: {list(missing[:5])}\n"
+                 "       The embedding TSV must cover every cell in the object "
+                 "(cell ids must match obs_names exactly).")
+    Z = num.loc[want].to_numpy(dtype=np.float32)
+    _log(f"{modality} latent from TSV: {Z.shape[0]} cells x {Z.shape[1]} dims")
+    return Z
+
+
+def merge_obs_tsv(adata, path, modality):
+    """Merge sidecar metadata into .obs, aligned on cell id. Never overwrites."""
+    import pandas as pd
+    df = _read_tsv_indexed(path, f"{modality} obs TSV")
+    want = pd.Index([str(x) for x in adata.obs_names])
+    overlap = want.intersection(df.index)
+    if len(overlap) == 0:
+        sys.exit(f"ERROR: no cell ids shared between {modality}.obs_names and {path}.\n"
+                 f"       obs_names look like: {list(want[:3])}\n"
+                 f"       TSV index looks like: {list(df.index[:3])}")
+    if len(overlap) < len(want):
+        _log(f"WARNING: {modality} obs TSV covers {len(overlap)}/{len(want)} cells; "
+             "the rest get NaN and will be dropped by --min-cells-per-group")
+    new = [c for c in df.columns if c not in adata.obs.columns]
+    skipped = [c for c in df.columns if c in adata.obs.columns]
+    if skipped:
+        _log(f"{modality} obs TSV: keeping existing .obs for {skipped[:5]}"
+             f"{' ...' if len(skipped) > 5 else ''} (not overwritten)")
+    for c in new:
+        adata.obs[c] = df[c].reindex(want).to_numpy()
+    _log(f"{modality} obs TSV: merged {len(new)} column(s): "
+         f"{new[:8]}{' ...' if len(new) > 8 else ''}")
+
+
 # ------------------------------------------------------------------ main
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
@@ -173,8 +245,24 @@ def main():
     ap.add_argument("--latent-key", default="X_glue",
                     help="obsm key holding the shared GLUE embedding")
     ap.add_argument("--latent-key-atac", default=None, help="override if ATAC key differs")
+    ap.add_argument("--latent-tsv", type=Path, default=None,
+                    help="TSV of GLUE embeddings (rows=cells, index=cell id, "
+                         "columns=latent dims) used INSTEAD of obsm. A single "
+                         "combined file covering both modalities is fine -- rows "
+                         "are matched to each object's obs_names. Use when the "
+                         "integration wrote embeddings to disk rather than into "
+                         "the .h5ad (e.g. combined_glue_embeddings.tsv).")
+    ap.add_argument("--latent-tsv-atac", type=Path, default=None,
+                    help="separate ATAC embedding TSV, if not in --latent-tsv")
     ap.add_argument("--group-key", required=True,
                     help="obs column in BOTH files; pairing is confined within it")
+    ap.add_argument("--obs-tsv", type=Path, default=None,
+                    help="TSV of extra cell metadata to merge into ATAC .obs "
+                         "before pairing, indexed by cell id (e.g. "
+                         "atac_metadata_with_transferred_labels.tsv). Use when the "
+                         "cell-type labels live in a sidecar rather than the .h5ad.")
+    ap.add_argument("--obs-tsv-rna", type=Path, default=None,
+                    help="same, for the RNA object")
     ap.add_argument("--rna-layer", default=None, help="layer to aggregate (default X)")
     ap.add_argument("--use-raw", action="store_true", help="aggregate RNA from .raw.X")
     ap.add_argument("--atac-layer", default=None)
@@ -207,16 +295,38 @@ def main():
     _log(f"reading {args.atac}")
     atac = anndata.read_h5ad(args.atac)
 
-    for nm, adata, lk in (("RNA", rna, lk_rna), ("ATAC", atac, lk_atac)):
-        if lk not in adata.obsm:
-            sys.exit(f"ERROR: latent key '{lk}' not in {nm}.obsm "
-                     f"(available: {list(adata.obsm.keys())})")
+    # -- optional sidecar metadata (labels living in a TSV, not the .h5ad) ------
+    for nm, adata, tsv in (("RNA", rna, args.obs_tsv_rna),
+                           ("ATAC", atac, args.obs_tsv)):
+        if tsv is None:
+            continue
+        merge_obs_tsv(adata, tsv, nm)
+
+    # -- latent: obsm, or a sidecar TSV of embeddings --------------------------
+    if args.latent_tsv is not None:
+        Zr_raw = latent_from_tsv(args.latent_tsv, rna.obs_names, "RNA")
+        Za_raw = latent_from_tsv(args.latent_tsv_atac or args.latent_tsv,
+                                 atac.obs_names, "ATAC")
+        lk_rna = lk_atac = f"tsv:{args.latent_tsv.name}"
+    else:
+        for nm, adata, lk in (("RNA", rna, lk_rna), ("ATAC", atac, lk_atac)):
+            if lk not in adata.obsm:
+                sys.exit(f"ERROR: latent key '{lk}' not in {nm}.obsm "
+                         f"(available: {list(adata.obsm.keys())}).\n"
+                         "       If the GLUE embedding was written to a TSV rather "
+                         "than into the .h5ad, pass --latent-tsv instead.")
+        Zr_raw = np.asarray(rna.obsm[lk_rna], dtype=np.float32)
+        Za_raw = np.asarray(atac.obsm[lk_atac], dtype=np.float32)
+
+    for nm, adata in (("RNA", rna), ("ATAC", atac)):
         if args.group_key not in adata.obs.columns:
             sys.exit(f"ERROR: group key '{args.group_key}' not in {nm}.obs "
-                     f"(available: {list(adata.obs.columns)})")
+                     f"(available: {list(adata.obs.columns)}).\n"
+                     "       If the labels live in a sidecar TSV, pass "
+                     "--obs-tsv / --obs-tsv-rna.")
 
-    Zr_all = l2_normalize(np.asarray(rna.obsm[lk_rna], dtype=np.float32))
-    Za_all = l2_normalize(np.asarray(atac.obsm[lk_atac], dtype=np.float32))
+    Zr_all = l2_normalize(Zr_raw)
+    Za_all = l2_normalize(Za_raw)
     if Zr_all.shape[1] != Za_all.shape[1]:
         sys.exit(f"ERROR: latent dims differ (RNA {Zr_all.shape[1]}, "
                  f"ATAC {Za_all.shape[1]}). These are not a shared space.")
