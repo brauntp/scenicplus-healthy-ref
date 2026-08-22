@@ -78,9 +78,32 @@ region-width report settles it. Either way stage 4a exports the PeakMatrix from
 the ArchRProject, which is the authoritative peak source; `atac.h5ad` is used
 only for its cell ids and latent coordinates.
 
-`inspect_archr.R` needs only ArchR (jsonlite optional). `inspect_anndata.py`
-needs anndata + mudata — the scGLUE env from stage 3 is fine, or any env with
-those two.
+**Neither inspector runs in the base conda env** — `Rscript` is usually not on
+PATH, and base has no `anndata`. You already have both somewhere: the GLUE
+integration ran in a python env with anndata, and the ArchRProject was built in
+an R with ArchR. Find them rather than building anything:
+
+```bash
+bash 00_inspect/find_inspect_env.sh          # read-only probe
+# bash 00_inspect/find_inspect_env.sh --create   # only if nothing suitable exists
+```
+
+It walks every conda env for `anndata`/`mudata`, checks whether `Rscript` has
+ArchR, and lists candidate `module load R/...` lines when R is absent. Then call
+the interpreter it names directly:
+
+```bash
+/path/to/glue_env/bin/python 00_inspect/inspect_anndata.py --rna ... --atac ... --out report_py
+```
+
+`inspect_anndata.py` needs anndata (mudata only for `--mudata` input);
+`inspect_archr.R` needs ArchR (jsonlite optional).
+
+**If the R side is a hassle, do not block on it.** The python inspector answers
+most of stage 1 — cell counts, where the latent lives, which label columns
+exist, the cell-id format, and matrix provenance. Send that report first; the
+ArchR one mainly adds peak geometry, which stage 2 also needs but stage 5 does
+not.
 
 **Send back `report_archr.md`, `report_py.md` and both `.json` files.** They
 answer: genome build; whether peaks are fixed-width 501 bp; which `obs` column

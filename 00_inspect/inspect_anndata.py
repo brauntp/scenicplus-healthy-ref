@@ -18,7 +18,17 @@ import json
 import sys
 from pathlib import Path
 
-import numpy as np
+try:
+    import numpy as np
+except ImportError:                                              # pragma: no cover
+    sys.exit(
+        "ERROR: this python has no 'numpy' (and so almost certainly no anndata).\n"
+        f"       interpreter: {sys.executable}\n"
+        "\n"
+        "       Use the environment the GLUE integration ran in. To locate it:\n"
+        "           bash 00_inspect/find_inspect_env.sh\n"
+        "       then call that interpreter directly:\n"
+        "           /path/to/env/bin/python 00_inspect/inspect_anndata.py ...")
 
 
 # ---------------------------------------------------------------- helpers
@@ -332,7 +342,21 @@ def main():
     if not (args.mudata or args.rna or args.atac):
         ap.error("give --mudata, or --rna and/or --atac")
 
-    import anndata
+    try:
+        import anndata
+    except ImportError:
+        sys.exit(
+            "ERROR: this python has no 'anndata'.\n"
+            f"       interpreter: {sys.executable}\n"
+            "\n"
+            "       You already have a python with anndata -- it is the env the GLUE\n"
+            "       integration ran in. Find it with:\n"
+            "           bash 00_inspect/find_inspect_env.sh\n"
+            "       then call that interpreter directly, e.g.\n"
+            "           /path/to/env/bin/python 00_inspect/inspect_anndata.py ...\n"
+            "\n"
+            "       (mudata is optional here -- only --mudata input needs it.)")
+
     rep = {"versions": {"python": sys.version.split()[0],
                         "anndata": anndata.__version__,
                         "numpy": np.__version__},
