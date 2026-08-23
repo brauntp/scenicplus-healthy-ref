@@ -78,6 +78,32 @@ region-width report settles it. Either way stage 4a exports the PeakMatrix from
 the ArchRProject, which is the authoritative peak source; `atac.h5ad` is used
 only for its cell ids and latent coordinates.
 
+## Which env does each step need?
+
+Two environments, and the split is deliberate — the light steps must not be
+blocked on the heavy env solving.
+
+| step | needs | env |
+|---|---|---|
+| `00_inspect/inspect_h5ad_lite.py`, `compare_labels.py` | h5py | none — `run_lite.sh` finds a python that has it |
+| `02_pair/attach_atac_labels.py` | h5py | none |
+| `02_pair/aggregate_atac_sparse.py` (**including `--dry-run`**) | numpy, scipy, pandas, anndata, mudata | `scplus-pairing` (`03_pipeline/pairing_env.yml`) |
+| `01_cistopic/*`, the SCENIC+ Snakemake pipeline | the full stack | `03_pipeline/environment.yml` |
+
+**`--dry-run` still needs the pairing env.** It is cheap in time and memory —
+it plans metacells and prints the footprint without aggregating — but it
+imports the same libraries as the real run. Create the env first:
+
+```bash
+mamba env create -f 03_pipeline/pairing_env.yml   # ~1 min, no compilation
+conda activate scplus-pairing
+bash 03_pipeline/preflight_pairing.sh             # confirms the interpreter
+```
+
+The pairing env is four libraries and solves in seconds; the full SCENIC+ env
+is ~900 packages with six source builds. Keep them separate so pairing can run
+before the big one exists.
+
 ### Fastest path: the h5py-only inspector
 
 `.h5ad` is documented HDF5, so the facts stage 1 needs can be read without

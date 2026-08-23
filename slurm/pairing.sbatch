@@ -10,11 +10,18 @@
 # NOT a login-node job: it holds ~10 GB of sparse input and allocates ~40 GB of
 # dense metacell matrices.
 #
-# BEFORE SUBMITTING, on the login node (seconds, no aggregation):
-#     python 02_pair/aggregate_atac_sparse.py ... --dry-run
-# That prints the exact metacell count, the dense footprint, and a --mem
-# recommendation. If the number it prints disagrees with the #SBATCH --mem
-# below, trust the dry run -- it read your actual data.
+# ORDER OF OPERATIONS -- the env comes FIRST. --dry-run imports numpy, scipy
+# and anndata like the real run does, so it needs the env too; it is cheap in
+# TIME and MEMORY, not in dependencies.
+#
+#   1.  mamba env create -f 03_pipeline/pairing_env.yml      # once, ~1 min
+#   2.  conda activate scplus-pairing
+#   3.  python 02_pair/aggregate_atac_sparse.py ... --dry-run    # login node OK
+#   4.  sbatch --account=... --partition=... slurm/pairing.sbatch
+#
+# Step 3 prints the exact metacell count, the dense footprint and a --mem
+# recommendation read from your actual data. If it disagrees with the #SBATCH
+# --mem below, trust the dry run.
 # =============================================================================
 
 # Account and partition are intentionally NOT hardcoded: pass them on the

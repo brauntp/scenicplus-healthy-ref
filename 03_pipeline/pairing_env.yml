@@ -4,6 +4,16 @@
 #     mamba env create -f 03_pipeline/pairing_env.yml
 #     conda activate scplus-pairing
 #
+# DO THIS FIRST. Everything in 02_pair/ needs this env -- including the
+# --dry-run mode, which is cheap in time and memory but imports numpy, scipy
+# and anndata exactly like the real run. Only the 00_inspect/ tools and
+# 02_pair/attach_atac_labels.py run without it (h5py only).
+#
+# Verified to solve on linux-64: every pin below resolves to a real conda-forge
+# build (h5py 3.12.1 nompi_py311h5ed33ec_103, numpy 1.26.4 py311h64a7726_0,
+# pandas 2.2.3 py311h7db5c69_3, scipy 1.14.1 py311he9a78e4_2, python 3.11.16).
+# No compilation.
+#
 # Deliberately separate from 03_pipeline/environment.yml. That one pins the full
 # SCENIC+ stack -- scenicplus, pycisTopic, pycistarget, MACS2, mallet, bedtools,
 # ~900 packages with six source builds -- and takes a long time to solve and
