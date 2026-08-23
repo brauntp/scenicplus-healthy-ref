@@ -248,11 +248,35 @@ def main():
     X_rna = sparse.csr_matrix(X_rna) if not sparse.issparse(X_rna) else X_rna.tocsr()
     X_atac = X_atac.tocsr()
 
-    gr = rna.obs[args.group_key].astype(str).to_numpy()
-    ga = atac.obs[args.group_key].astype(str).to_numpy()
-    groups = sorted(set(gr) & set(ga))
-    only_r = sorted(set(gr) - set(ga))
-    only_a = sorted(set(ga) - set(gr))
+    # Coerce labels to strings, but keep MISSING as missing. A bare
+    # .astype(str) turns NaN into the literal string "nan", which then looks
+    # like a perfectly good cell type: the unlabelled cells get pooled into a
+    # junk group, metacelled, and handed to SCENIC+ as if they were a lineage.
+    # Empty strings arrive the same way from a TSV with blank fields.
+    MISSING = {"nan", "NaN", "NA", "None", "none", "null", "", "unassigned",
+               "Unassigned", "unknown", "Unknown", "NULL", "<NA>"}
+
+    def _labels(adata, nm):
+        s = adata.obs[args.group_key]
+        arr = s.astype(str).str.strip().to_numpy()
+        bad = np.isin(arr, list(MISSING)) | s.isna().to_numpy()
+        if bad.any():
+            _log(f"{nm}: {bad.sum():,} of {len(arr):,} cells have no "
+                 f"'{args.group_key}' label -- EXCLUDED "
+                 f"(values seen: {sorted(set(arr[bad]))[:5]})")
+            arr = arr.copy()
+            arr[bad] = "\x00UNLABELLED"          # cannot collide with a real label
+        return arr, int(bad.sum())
+
+    gr, n_bad_r = _labels(rna, "RNA")
+    ga, n_bad_a = _labels(atac, "ATAC")
+    UNL = "\x00UNLABELLED"
+    groups = sorted((set(gr) & set(ga)) - {UNL})
+    only_r = sorted(set(gr) - set(ga) - {UNL})
+    only_a = sorted(set(ga) - set(gr) - {UNL})
+    if n_bad_r or n_bad_a:
+        _log(f"unlabelled cells excluded from pairing: "
+             f"RNA {n_bad_r:,}, ATAC {n_bad_a:,}")
     if only_r:
         _log(f"RNA-only groups (dropped): {only_r}")
     if only_a:

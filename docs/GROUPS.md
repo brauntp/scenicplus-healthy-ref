@@ -38,6 +38,18 @@ Three groups are limited by RNA instead: Monocyte (2,976 RNA vs 3,021 ATAC),
 Plasma Cell (503 vs 561), and Stromal (490 vs 6,215). Stromal is the notable
 one: 6,215 ATAC cells are wasted against 490 RNA cells, a 12.7× imbalance.
 
+## Unlabelled cells
+
+The label TSV leaves **259 ATAC cells** without a `predicted_CellType`, and
+**3,588 RNA cells** have no `predicted_CellType_Broad`. These are excluded from
+pairing and reported by name at the top of every run.
+
+This was a bug, caught by reading the first real dry run: `.astype(str)` turns
+NaN into the literal string `"nan"`, so the unlabelled cells were being pooled
+into a 25th group called `nan` and given 60 metacells — a mixture of whatever
+those cells are, handed to SCENIC+ as if it were a lineage. Blank strings from
+the TSV arrive the same way. Both are now treated as missing.
+
 ## Recommended parameters
 
 ```
@@ -47,8 +59,13 @@ one: 6,215 ATAC cells are wasted against 490 RNA cells, a 12.7× imbalance.
 --min-cells-per-group  50      # drops nothing at broad level; Pro-Monocyte (69) survives
 ```
 
-25,323 metacells, ~40 GB peak for the paired object. Compare
-`impute_accessibility` on this reference: 241 GB, 481 GB with the transpose.
+**Measured on the real data** (`--dry-run`, 2026-08-23): 25,323 metacells,
+40.4 GB dense output, 14.8 GB sparse inputs, so peak RSS ~55 GB. `--mem=80G`
+in `slurm/pairing.sbatch` leaves headroom. Compare `impute_accessibility` on
+this reference: 241 GB, 481 GB with the transpose.
+
+(The dry run initially reported 25,383 — the extra 60 were the spurious `nan`
+group described above.)
 
 `--oversample 16` doubles both (50,510 metacells, ~80 GB) and buys ranking but
 not independence — see `docs/oversampling_tradeoff.png`.
