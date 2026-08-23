@@ -47,19 +47,30 @@
 
 set -euo pipefail
 
-# --- paths (EDIT THESE) ------------------------------------------------------
-REF=/home/groups/MaxsonBraunScratch/worme/projects/scATAC/251112_hematopoiesis_ref/integration/output/02
-LABELS=atac_labels.tsv          # from 02_pair/attach_atac_labels.py
-OUT=ACC_GEX.h5mu
-GROUP_KEY=predicted_CellType_Broad
+# --- paths and parameters ----------------------------------------------------
+# A batch job does NOT inherit the shell variables you exported at a prompt, so
+# source the project's own settings. Edit setenv.sh, not this file.
+cd "$SLURM_SUBMIT_DIR" || exit 1
+if [[ -f setenv.sh ]]; then
+    # shellcheck disable=SC1091
+    source setenv.sh
+else
+    echo "ERROR: setenv.sh not found in $SLURM_SUBMIT_DIR" >&2
+    exit 1
+fi
 
-# --- pairing parameters ------------------------------------------------------
-# See docs/GROUPS.md for why these values. k=50 maximises effect size on true
-# links; oversample 8 improves ranking; the floor carries small populations.
-K=50
-OVERSAMPLE=8
-FLOOR=60
-MIN_CELLS=50
+OUT="${PAIRED:-ACC_GEX.h5mu}"
+
+# Refuse before queue time is spent rather than failing deep in h5py.
+for f in "$REF/rna.h5ad" "$REF/atac.h5ad" "$LABELS"; do
+    if [[ ! -f "$f" ]]; then
+        echo "ERROR: missing input: $f" >&2
+        [[ "$f" == /*.h5ad && "$(dirname "$f")" == "/" ]] && \
+            echo "       (parent is '/', so REF was empty -- check setenv.sh)" >&2
+        exit 1
+    fi
+done
+echo "inputs verified under REF=$REF"
 
 # --- environment -------------------------------------------------------------
 # This step needs anndata + mudata + scipy, so the h5py-only interpreter that

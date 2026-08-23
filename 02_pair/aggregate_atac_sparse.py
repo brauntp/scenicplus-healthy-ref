@@ -157,6 +157,29 @@ def main():
     ap.add_argument("--diagnostics", type=Path, default=None)
     args = ap.parse_args()
 
+    # -- validate paths BEFORE importing or reading anything -----------------
+    # An unset shell variable makes "$REF/rna.h5ad" expand to "/rna.h5ad", which
+    # otherwise surfaces as an h5py traceback 20 frames deep. Catch it here and
+    # name the likely cause.
+    bad = []
+    for flag, p in (("--rna", args.rna), ("--atac", args.atac),
+                    ("--obs-tsv", args.obs_tsv), ("--obs-tsv-rna", args.obs_tsv_rna)):
+        if p is None:
+            continue
+        if not p.exists():
+            hint = ""
+            # A path whose parent is the filesystem root is almost always an
+            # empty variable: "$REF/atac.h5ad" with REF unset.
+            if p.parent == Path("/"):
+                hint = ("  <-- parent is '/', so an environment variable in this "
+                        "path was EMPTY. Did you `export REF=...` in this shell? "
+                        "Login shells do not inherit it from a previous session.")
+            bad.append(f"  {flag} {p}{hint}")
+    if bad:
+        sys.exit("ERROR: input file(s) not found:\n" + "\n".join(bad) +
+                 "\n\nNothing was read. Fix the paths and re-run; --dry-run is "
+                 "free.")
+
     import anndata
     import mudata
     import pandas as pd

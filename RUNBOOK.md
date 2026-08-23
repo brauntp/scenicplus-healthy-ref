@@ -78,6 +78,21 @@ region-width report settles it. Either way stage 4a exports the PeakMatrix from
 the ArchRProject, which is the authoritative peak source; `atac.h5ad` is used
 only for its cell ids and latent coordinates.
 
+## First thing in every new shell
+
+```bash
+source setenv.sh
+```
+
+This sets `$REF` and the pairing parameters, and verifies the three input files
+exist. Do it on each login — a variable you exported at a prompt is gone when
+you log out, and the next login node inherits nothing. An unset `$REF` makes
+`"$REF/rna.h5ad"` expand to `/rna.h5ad`, which used to fail deep inside h5py;
+the scripts now catch that and say so, but sourcing the file avoids it entirely.
+
+`slurm/pairing.sbatch` sources it too, since a batch job does not inherit the
+submitting shell's variables either. Edit `setenv.sh` rather than the sbatch.
+
 ## Which env does each step need?
 
 Two environments, and the split is deliberate — the light steps must not be
