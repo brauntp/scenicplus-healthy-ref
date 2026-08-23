@@ -111,8 +111,18 @@ echo "[3] output file"
 OUT="${PAIRED:-ACC_GEX.h5mu}"
 if [[ -f "$OUT" ]]; then
     echo "    $OUT  $(du -h "$OUT" | cut -f1)  modified $(date -r "$OUT" 2>/dev/null)"
-    echo "    -> verifying it is a complete, readable MuData:"
-    python 03_pipeline/validate_h5mu.py "$OUT" 2>&1 | tail -12 | sed 's/^/      /'
+    # Metadata only. validate_h5mu.py calls mudata.read(), which materialises
+    # every matrix -- on a 41 GB object that is tens of GB of RAM and minutes of
+    # I/O, which does not belong on a login node. peek_h5mu.py reads HDF5
+    # metadata plus a few sampled chunks and returns in under a second.
+    echo "    -> structure (metadata only, no matrices read):"
+    python 03_pipeline/peek_h5mu.py "$OUT" \
+        ${EXPECT_METACELLS:+--expect-metacells "$EXPECT_METACELLS"} \
+        ${EXPECT_GROUPS:+--expect-groups "$EXPECT_GROUPS"} \
+        2>&1 | sed 's/^/      /'
+    echo
+    echo "    For the full NaN scan, submit it rather than running it here:"
+    echo "      sbatch slurm/qc_paired.sbatch"
 else
     echo "    $OUT does NOT exist -- the job did not get to the write step."
 fi

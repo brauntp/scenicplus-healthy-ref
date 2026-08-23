@@ -111,8 +111,17 @@ def main():
     import mudata
     import pandas as pd
 
-    _log(f"reading {args.h5mu}")
-    md = mudata.read(str(args.h5mu))
+    # backed=True keeps the matrices on disk. The ATAC block is ~37 GB dense on
+    # this reference and QC needs only the few hundred marker-window columns, so
+    # loading it whole would cost ~90 GB for no benefit.
+    _log(f"reading {args.h5mu} (backed)")
+    try:
+        md = mudata.read(str(args.h5mu), backed="r")
+    except (TypeError, ValueError, OSError) as e:
+        _log(f"backed read unavailable ({type(e).__name__}); reading in memory")
+        _log("NOTE: this materialises every matrix -- submit it "
+             "(slurm/qc_paired.sbatch) rather than running on a login node")
+        md = mudata.read(str(args.h5mu))
     if not {"scRNA", "scATAC"} <= set(md.mod):
         sys.exit(f"ERROR: expected modalities scRNA and scATAC, found {list(md.mod)}")
     R, A = md["scRNA"], md["scATAC"]
@@ -122,12 +131,26 @@ def main():
     s = {"n_metacells_rna": int(R.shape[0]), "n_metacells_atac": int(A.shape[0]),
          "n_genes": int(R.shape[1]), "n_regions": int(A.shape[1]),
          "obs_names_identical": list(R.obs_names) == list(A.obs_names)}
-    Xr = R.X.toarray() if hasattr(R.X, "toarray") else np.asarray(R.X)
-    Xa = A.X.toarray() if hasattr(A.X, "toarray") else np.asarray(A.X)
+    def _dense(X):
+        return X.toarray() if hasattr(X, "toarray") else np.asarray(X)
+
+    # RNA is small (~3 GB dense here) so read it whole. ATAC is not: only the
+    # marker-window columns are ever needed, selected further down.
+    Xr = _dense(R.X[:] if hasattr(R.X, "shape") and not hasattr(R.X, "toarray")
+                else R.X)
     s["rna_nan"] = int(np.isnan(Xr).sum())
-    s["atac_nan"] = int(np.isnan(Xa).sum())
     s["rna_allzero_metacells"] = int((Xr.sum(1) == 0).sum())
-    s["atac_allzero_metacells"] = int((Xa.sum(1) == 0).sum())
+    # ATAC row sums stream in metacell blocks -- no full densification.
+    _atac_rowsum = np.zeros(A.shape[0], dtype=np.float64)
+    _atac_nan = 0
+    _BLK = 2048
+    for i0 in range(0, A.shape[0], _BLK):
+        blk = _dense(A.X[i0:i0 + _BLK])
+        _atac_nan += int(np.isnan(blk).sum())
+        _atac_rowsum[i0:i0 + blk.shape[0]] = blk.sum(1)
+    s["atac_nan"] = _atac_nan
+    s["atac_allzero_metacells"] = int((_atac_rowsum == 0).sum())
+    s["atac_scan"] = "streamed in blocks (full scan, never fully densified)"
     if args.group_key in R.obs.columns:
         vc = R.obs[args.group_key].astype(str).value_counts()
         s["n_groups"] = int(len(vc))
@@ -202,7 +225,36 @@ def main():
     mid = np.where(ok, (rs + re_) / 2.0, np.nan)
     # Accessibility strata for the null: match decoy peaks on mean signal, so a
     # correlation is not attributable to peaks simply being more accessible.
-    acc_mean = Xa.mean(0)
+    # Column means, streamed. Needed for the accessibility-matched null, and it
+    # is the last thing that would otherwise force a full densification.
+    _csum = np.zeros(A.shape[1], dtype=np.float64)
+    for i0 in range(0, A.shape[0], _BLK):
+        _csum += _dense(A.X[i0:i0 + _BLK]).sum(0)
+    acc_mean = (_csum / A.shape[0]).astype(np.float32)
+
+    # Only the columns QC actually touches get materialised: peaks within the
+    # window of some marker TSS, plus a pool of accessibility-matched decoys.
+    # That is a few thousand of ~394k columns, so this is MBs not tens of GBs.
+    _need = np.zeros(A.shape[1], dtype=bool)
+    for gene in genes_present:
+        _r = mk[mk.gene == gene].iloc[0]
+        _need |= (ok & (chrom == _r.chrom) & (np.abs(mid - _r.tss) <= args.window))
+    _n_true = int(_need.sum())
+    _rng0 = np.random.default_rng(12345)
+    _pool = np.flatnonzero(ok & ~_need)
+    if len(_pool):
+        _decoy = _rng0.choice(_pool, min(len(_pool), max(20_000, 40 * _n_true)),
+                              replace=False)
+        _need[_decoy] = True
+    _cols = np.flatnonzero(_need)
+    _log(f"materialising {len(_cols):,} of {A.shape[1]:,} ATAC columns "
+         f"({_n_true:,} in marker windows + decoy pool) = "
+         f"{A.shape[0]*len(_cols)*4/1024**3:.2f} GB")
+    _remap = np.full(A.shape[1], -1, dtype=np.int64)
+    _remap[_cols] = np.arange(len(_cols))
+    Xa_sub = np.empty((A.shape[0], len(_cols)), dtype=np.float32)
+    for i0 in range(0, A.shape[0], _BLK):
+        Xa_sub[i0:i0 + _BLK] = _dense(A.X[i0:i0 + _BLK])[:, _cols]
     rng = np.random.default_rng(0)
     gcol = {g: i for i, g in enumerate(R.var_names)}
     tot = Xr.sum(1, keepdims=True)
@@ -218,17 +270,19 @@ def main():
                               "rho_true": None, "rho_null_median": None})
             continue
         expr = Xn[:, gcol[gene]]
-        acc_true = Xa[:, near].mean(1)
+        acc_true = Xa_sub[:, _remap[np.flatnonzero(near)]].mean(1)
         rho_true = spearman(acc_true, expr)
         # null: same number of peaks, same accessibility stratum, other chromosomes
         lo, hi = np.quantile(acc_mean[near], [0.1, 0.9])
-        far = ok & (chrom != row.chrom) & (acc_mean >= lo) & (acc_mean <= hi)
+        # restrict decoys to columns we materialised
+        far = (ok & (chrom != row.chrom) & (acc_mean >= lo)
+               & (acc_mean <= hi) & (_remap >= 0))
         far_idx = np.flatnonzero(far)
         nulls = []
         if len(far_idx) >= n_near:
             for _ in range(30):
                 pick = rng.choice(far_idx, n_near, replace=False)
-                nulls.append(spearman(Xa[:, pick].mean(1), expr))
+                nulls.append(spearman(Xa_sub[:, _remap[pick]].mean(1), expr))
         nulls = np.array([x for x in nulls if np.isfinite(x)])
         link_rows.append({
             "gene": gene, "chrom": row.chrom, "tss": int(row.tss),

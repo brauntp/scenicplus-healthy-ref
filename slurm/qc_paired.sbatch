@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# =============================================================================
+# QC the paired object -- SLURM job.
+#
+#     conda activate scplus-pairing
+#     mkdir -p jobs
+#     sbatch slurm/qc_paired.sbatch
+#
+# NOT for a login node. Even with the column subsetting in qc_paired.py this
+# reads the RNA block whole (~3 GB dense) and streams all 394k ATAC columns for
+# the NaN scan. The full validator (validate_h5mu.py -> mudata.read) is worse: it
+# materialises every matrix, ~40 GB, which is what hung an interactive session.
+#
+# Follows maxsonBraunLab/cutTag-pipeline: partition batch, logs in jobs/.
+# =============================================================================
+#SBATCH --job-name=qc_paired
+#SBATCH --partition=batch
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=2
+#SBATCH --mem=32G
+#SBATCH --time=01:00:00
+#SBATCH --output=jobs/qc_paired_%j.out
+#SBATCH --error=jobs/qc_paired_%j.err
+
+set -euo pipefail
+cd "$SLURM_SUBMIT_DIR" || exit 1
+[[ -f setenv.sh ]] || { echo "ERROR: setenv.sh not found" >&2; exit 1; }
+# shellcheck disable=SC1091
+source setenv.sh
+
+OUT="${PAIRED:-ACC_GEX.h5mu}"
+[[ -f "$OUT" ]] || { echo "ERROR: $OUT does not exist" >&2; exit 1; }
+
+PAIRING_ENV="scplus-pairing"
+if [[ "${CONDA_DEFAULT_ENV:-}" != "$PAIRING_ENV" ]]; then
+    CONDA_BASE="${CONDA_BASE:-$HOME/miniconda3}"
+    if [[ -f "$CONDA_BASE/etc/profile.d/conda.sh" ]]; then
+        # shellcheck disable=SC1091
+        source "$CONDA_BASE/etc/profile.d/conda.sh"
+        conda activate "$PAIRING_ENV"
+    else
+        echo "ERROR: '$PAIRING_ENV' not active and no conda.sh under $CONDA_BASE" >&2
+        exit 1
+    fi
+fi
+echo "env: ${CONDA_DEFAULT_ENV:-?}  |  object: $OUT ($(du -h "$OUT" | cut -f1))"
+
+echo "=== structure (metadata only) ==="
+python 03_pipeline/peek_h5mu.py "$OUT" \
+    --expect-metacells 25323 --expect-groups 24 --group-key "$GROUP_KEY"
+
+echo
+echo "=== biology: marker specificity and locus linkage ==="
+/usr/bin/time -v python 02_pair/qc_paired.py \
+    --h5mu             "$OUT" \
+    --markers          00_inspect/marker_tss_hg38.tsv \
+    --group-key        "$GROUP_KEY" \
+    --expect-groups    24 \
+    --expect-metacells 25323 \
+    --out              qc_paired
+QC_RC=$?
+
+echo
+echo "=== full NaN / structural validation (materialises every matrix) ==="
+# Run this LAST: if it OOMs, the cheap checks above have already reported.
+python 03_pipeline/validate_h5mu.py "$OUT" || echo "validate_h5mu.py returned nonzero"
+
+echo
+echo "=== done ==="
+echo "read qc_paired.md -- the verdict line, then section 3 (locus linkage)."
+echo "A FAIL on linkage means region-to-gene inference will not work on this"
+echo "object and SCENIC+ should not be run until it is understood."
+exit "$QC_RC"
