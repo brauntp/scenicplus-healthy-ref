@@ -53,11 +53,13 @@ echo
 echo "[3] required libraries in THIS python"
 MISSING=()
 if [[ -n "$PY" ]]; then
-    for m in numpy scipy pandas h5py anndata mudata; do
+    # yaml is here because 03_pipeline/make_config.sh needs it and job 10714858
+    # died on its absence AFTER a 43-minute generator run had already succeeded.
+    for m in numpy scipy pandas h5py anndata mudata yaml; do
         if v=$("$PY" -c "import $m,sys;print(getattr($m,'__version__','?'))" 2>/dev/null); then
-            printf "    OK      %-8s %s\n" "$m" "$v"
+            printf "    OK      %-9s %s\n" "$m" "$v"
         else
-            printf "    MISSING %-8s\n" "$m"
+            printf "    MISSING %-9s\n" "$m"
             MISSING+=("$m")
         fi
     done

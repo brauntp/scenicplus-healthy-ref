@@ -45,6 +45,11 @@ dependencies:
   - scipy=1.14.1
   - pandas=2.2.3
   - h5py=3.12.1
+  # 03_pipeline/make_config.sh parses the rendered config to validate every
+  # input path. Without pyyaml its check exits 1 with a message telling you to
+  # activate THIS env -- which is what happened in job 10714858. Prebuilt
+  # linux-64 cp311 wheel, no compile.
+  - pyyaml=6.0.2
   - pip:
       # Pure-python wheels; conda-forge lags on these two.
       - anndata==0.10.9

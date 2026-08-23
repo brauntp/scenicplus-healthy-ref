@@ -141,7 +141,11 @@ echo "generator exit: ${RS_RC}"
 
 echo
 echo "=== [3/3] does the config validate now? ==="
-bash 03_pipeline/make_config.sh --check-only
+# make_config.sh logs to stderr, which SLURM sends to a DIFFERENT file
+# (jobs/%x-%j.err). Job 10714858 therefore showed "config check exit: 1" in the
+# .out with no reason beside it, and the reason -- "needs pyyaml" -- was in the
+# .err. Fold stderr in so the .out is self-contained.
+bash 03_pipeline/make_config.sh --check-only 2>&1
 CFG_RC=$?
 echo "config check exit: ${CFG_RC}"
 

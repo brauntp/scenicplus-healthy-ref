@@ -143,8 +143,18 @@ import os, sys
 try:
     import yaml
 except ImportError:
-    sys.exit("ERROR: needs pyyaml to validate. conda activate scplus-pairing "
-             "(or the scenicplus env) and re-run.")
+    sys.exit("ERROR: this python has no 'pyyaml', which the config validation "
+             "needs.\n"
+             f"       interpreter: {sys.executable}\n"
+             "\n"
+             "       Do NOT just activate scplus-pairing -- older builds of "
+             "that env\n"
+             "       lack pyyaml too, which is how this failed in job 10714858. "
+             "Either:\n"
+             "         mamba install -n scplus-pairing pyyaml     # one pure "
+             "wheel, seconds\n"
+             "       or run this from the scenicplus env, which carries it via "
+             "snakemake.")
 
 rendered, root, paired = sys.argv[1], sys.argv[2], sys.argv[3]
 cfg = yaml.safe_load(open(rendered))
