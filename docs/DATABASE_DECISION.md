@@ -104,6 +104,68 @@ python 04_db/characterize_dropped.py \
     --out       dropped_characterization
 ```
 
+## The characterisation ran — and its verdict was wrong
+
+`characterize_dropped.py` on the real object (163,969 cells, labels from the
+sidecar TSV, all rows matching):
+
+| metric | retained | dropped | effect | p |
+|---|---|---|---|---|
+| prevalence | 0.0030 | 0.0014 | **−0.488** | ~0 |
+| strength | 0.0053 | 0.0025 | **−0.497** | ~0 |
+| specificity | 4.1626 | 4.8003 | **+0.195** | ~0 |
+
+It returned "CUSTOM DATABASE JUSTIFIED" on the specificity line. **Do not act on
+that.** The decision rule I encoded fired on a confounded metric.
+
+`specificity = max-group mean / mean over groups` is not prevalence-invariant. A
+peak accessible in 230 cells spread over 24 groups of very unequal size will
+concentrate somewhere by chance. Simulating peaks with **zero** true cell-type
+preference at this reference's real group sizes (69 to 31,618 cells):
+
+| prevalence | apparent specificity under the null |
+|---|---|
+| 0.0030 (retained median) | 2.549 |
+| 0.0014 (dropped median) | 3.268 |
+
+The null alone predicts dropped peaks scoring **1.282×** higher. The observed
+ratio is **1.153×** — *below* the null expectation. And the prevalence effect
+(−0.488) is 2.5× larger than the specificity effect and points the other way:
+dropped peaks are mostly just sparser.
+
+## The corrected test
+
+`04_db/reanalyze_dropped.py` re-analyses the per-peak CSV that
+`characterize_dropped.py` already wrote — no second pass over the matrix — and
+compares specificity **at matched prevalence**.
+
+Quantile stratification alone is insufficient, which is worth recording because
+it looked sufficient: on a fixture whose only difference was prevalence, ten
+strata still left a pooled effect of +0.047 that cleared the permutation null —
+a false positive. Even inside a decile the dropped peaks sit at the low end and
+the retained at the high end. So the primary test is 1:1 nearest-neighbour
+matching on prevalence (2% relative tolerance, without replacement), which
+drives the matched prevalence ratio to 1.000.
+
+Validated on two fixtures identical but for one thing:
+
+| fixture | naive effect | matched effect | verdict |
+|---|---|---|---|
+| sparser only, no real specificity difference | +0.345 | **+0.009** (p=0.24) | precomputed adequate |
+| sparser *and* genuinely more specific | +0.862 | **+0.673** (p≈0) | custom justified |
+
+```bash
+python 04_db/reanalyze_dropped.py \
+    --per-peak dropped_characterization.per_peak.csv \
+    --out      dropped_stratified
+```
+
+**Prediction, stated before the run so it can be wrong:** since the observed
+specificity ratio (1.153) is below what prevalence alone predicts (1.282), I
+expect the matched effect to be near zero or negative — "precomputed is
+adequate". That is inference from summary statistics; the matched test on the
+per-peak data decides.
+
 ## Cost of each branch, for when the verdict lands
 
 **Precomputed SCREEN.** One 32.8 GiB download, no compute. Loses 18.8% of peaks
