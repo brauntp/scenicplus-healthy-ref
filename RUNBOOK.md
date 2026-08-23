@@ -105,17 +105,19 @@ you're associated with (`sacctmgr`), the partition list with the default
 marked, and which partitions have ≥80 GB per node and a walltime cap above
 4 hours — both of which the pairing job needs.
 
-If your site sets a default account and partition, no flags are needed at all:
+**On ARC, as probed 2026-08-23:**
 
 ```bash
-sbatch slurm/pairing.sbatch
+sbatch --account=maxsonlab --partition=batch slurm/pairing.sbatch
 ```
 
-Otherwise pass what the script reports:
+`batch` — 142 nodes, 391 GB/node, 36 h cap — comfortably fits the job's 80 GB
+and ~4 h. 1,534 of the 1,535 recorded jobs on this account ran there.
 
-```bash
-sbatch --account=<acct> --partition=<part> slurm/pairing.sbatch
-```
+**Pass `--partition` explicitly even though a default exists.** The site default
+is `interactive` (19 nodes, 7-day cap), a pool shared with people waiting at a
+prompt; a multi-hour batch job does not belong there. Relying on the default
+would silently land it in the wrong place.
 
 Anything on the `sbatch` command line overrides the directives in the script,
 which is why `pairing.sbatch` deliberately does not hardcode either one.

@@ -82,14 +82,34 @@ DEF_ACCT=$(sacctmgr -n show user "$USER" format=DefaultAccount 2>/dev/null | awk
     && echo "    default account  : $DEF_ACCT" \
     || echo "    no default account -- you may need --account"
 
+# The most-used partition from history, which beats the site default: a default
+# is often an INTERACTIVE partition, and a multi-hour batch job does not belong
+# in a pool shared with people waiting at a prompt.
+HIST_PART=""
+HIST_ACCT=""
+if command -v sacct >/dev/null 2>&1; then
+    read -r HIST_ACCT HIST_PART < <(
+        sacct -u "$USER" --starttime now-90days -n -X \
+              --format=Account%-30,Partition%-30 2>/dev/null \
+        | awk 'NF==2{c[$1" "$2]++} END{m=0; for(k in c) if(c[k]>m){m=c[k]; b=k} print b}')
+fi
+
 echo
 echo "=============================================================="
-if [[ -n "$DEF_PART" && -n "$DEF_ACCT" && "$DEF_ACCT" != "(null)" ]]; then
-    echo "Defaults exist, so this is enough:"
-    echo "    sbatch slurm/pairing.sbatch"
-    echo
-    echo "To be explicit:"
+if [[ -n "$HIST_PART" && -n "$HIST_ACCT" ]]; then
+    echo "RECOMMENDED -- what you actually use:"
+    echo "    sbatch --account=$HIST_ACCT --partition=$HIST_PART slurm/pairing.sbatch"
+    if [[ -n "$DEF_PART" && "$DEF_PART" != "$HIST_PART" ]]; then
+        echo
+        echo "Note: the site DEFAULT partition is '$DEF_PART', which is not the"
+        echo "one you normally use. Passing --partition explicitly avoids"
+        echo "landing somewhere unintended -- especially if the default is an"
+        echo "interactive pool, which is the wrong home for a multi-hour job."
+    fi
+elif [[ -n "$DEF_PART" && -n "$DEF_ACCT" && "$DEF_ACCT" != "(null)" ]]; then
+    echo "No job history to learn from. Defaults are:"
     echo "    sbatch --account=$DEF_ACCT --partition=$DEF_PART slurm/pairing.sbatch"
+    echo "Check in [3] that '$DEF_PART' is a batch partition, not interactive."
 else
     echo "Submit with whatever [1] shows worked before:"
     echo "    sbatch --account=<acct> --partition=<part> slurm/pairing.sbatch"
