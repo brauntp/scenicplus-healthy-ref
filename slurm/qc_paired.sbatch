@@ -18,12 +18,21 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=2
-#SBATCH --mem=32G
+# 96G, not 32G. The backed/subsetting path in qc_paired.py peaks near 6 GB, but
+# validate_h5mu.py at the end calls mudata.read() unbacked and then scans every
+# matrix: 40.4 GB resident, and pandas/numpy copies during the scan push the
+# peak to ~81 GB. Sizing this to the cheap step would OOM on the expensive one.
+#SBATCH --mem=96G
 #SBATCH --time=01:00:00
 #SBATCH --output=jobs/qc_paired_%j.out
 #SBATCH --error=jobs/qc_paired_%j.err
 
-set -euo pipefail
+# NO `set -e`. The checks below are deliberately allowed to fail independently:
+# a FAIL verdict from qc_paired.py exits 2, and under `set -e` that would abort
+# the script before the full validator ran -- skipping the expensive check
+# exactly when a problem has been found and it is most wanted. Each step
+# captures its own status instead, and the script exits on the aggregate.
+set -uo pipefail
 cd "$SLURM_SUBMIT_DIR" || exit 1
 [[ -f setenv.sh ]] || { echo "ERROR: setenv.sh not found" >&2; exit 1; }
 # shellcheck disable=SC1091
@@ -46,12 +55,14 @@ if [[ "${CONDA_DEFAULT_ENV:-}" != "$PAIRING_ENV" ]]; then
 fi
 echo "env: ${CONDA_DEFAULT_ENV:-?}  |  object: $OUT ($(du -h "$OUT" | cut -f1))"
 
-echo "=== structure (metadata only) ==="
+echo "=== [1/3] structure (metadata only, seconds) ==="
 python 03_pipeline/peek_h5mu.py "$OUT" \
     --expect-metacells 25323 --expect-groups 24 --group-key "$GROUP_KEY"
+PEEK_RC=$?
+echo "peek exit: $PEEK_RC"
 
 echo
-echo "=== biology: marker specificity and locus linkage ==="
+echo "=== [2/3] biology: marker specificity and locus linkage ==="
 /usr/bin/time -v python 02_pair/qc_paired.py \
     --h5mu             "$OUT" \
     --markers          00_inspect/marker_tss_hg38.tsv \
@@ -60,15 +71,29 @@ echo "=== biology: marker specificity and locus linkage ==="
     --expect-metacells 25323 \
     --out              qc_paired
 QC_RC=$?
+echo "qc exit: $QC_RC  (2 = FAIL verdict; the report still written)"
 
 echo
-echo "=== full NaN / structural validation (materialises every matrix) ==="
-# Run this LAST: if it OOMs, the cheap checks above have already reported.
-python 03_pipeline/validate_h5mu.py "$OUT" || echo "validate_h5mu.py returned nonzero"
+echo "=== [3/3] full NaN / structural validation (materialises every matrix) ==="
+# Runs unconditionally, INCLUDING after a FAIL above -- when something is wrong
+# is exactly when the exhaustive scan is most informative. This is the step the
+# 96G allocation exists for.
+python 03_pipeline/validate_h5mu.py "$OUT"
+VAL_RC=$?
+echo "validate exit: $VAL_RC"
 
 echo
-echo "=== done ==="
-echo "read qc_paired.md -- the verdict line, then section 3 (locus linkage)."
+echo "=== summary ==="
+printf '  peek     : %s\n' "$( [[ $PEEK_RC -eq 0 ]] && echo PASS || echo "PROBLEM (rc=$PEEK_RC)" )"
+printf '  qc       : %s\n' "$( [[ $QC_RC   -eq 0 ]] && echo PASS || echo "FAIL (rc=$QC_RC)" )"
+printf '  validate : %s\n' "$( [[ $VAL_RC  -eq 0 ]] && echo PASS || echo "PROBLEM (rc=$VAL_RC)" )"
+echo
+echo "Read qc_paired.md -- the verdict line, then section 3 (locus linkage)."
 echo "A FAIL on linkage means region-to-gene inference will not work on this"
 echo "object and SCENIC+ should not be run until it is understood."
-exit "$QC_RC"
+# Nonzero if ANY check failed, so sacct shows FAILED rather than a green job
+# with a bad object.
+if [[ $PEEK_RC -ne 0 || $QC_RC -ne 0 || $VAL_RC -ne 0 ]]; then
+    exit 2
+fi
+exit 0

@@ -23,8 +23,7 @@
 # =============================================================================
 
 #SBATCH --job-name=scenicplus
-#SBATCH --account=<ARC_ACCOUNT>
-#SBATCH --partition=<ARC_PARTITION>
+#SBATCH --partition=batch
 
 # --- one node, all cores in one task -----------------------------------------
 # Everything parallel in SCENIC+ is shared-memory within a single process tree:
@@ -79,8 +78,8 @@
 # --- logs --------------------------------------------------------------------
 # %x = job name, %j = job id. Directory must EXIST before submit or slurm
 # silently discards output.
-#SBATCH --output=slurm/logs/%x-%j.out
-#SBATCH --error=slurm/logs/%x-%j.err
+#SBATCH --output=jobs/%x-%j.out
+#SBATCH --error=jobs/%x-%j.err
 
 # --- notifications (optional) ------------------------------------------------
 ##SBATCH --mail-type=END,FAIL
@@ -207,7 +206,9 @@ export MALLET_MEMORY="${MALLET_MEMORY:-64g}"
 # then submit this job.
 
 # --- run ---------------------------------------------------------------------
-CORES="${SLURM_CPUS_PER_TASK:-<N_CPU>}"
+# Fall back to a number, not a placeholder: "<N_CPU>" would reach snakemake
+# --cores as a literal string and fail with an unhelpful parse error.
+CORES="${SLURM_CPUS_PER_TASK:-8}"
 
 # run_pipeline.sh does the config/input validation, gates on validate_h5mu.py,
 # writes the resolved config with n_cpu=CORES, and invokes snakemake with

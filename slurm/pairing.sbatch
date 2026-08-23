@@ -51,7 +51,10 @@
 # #SBATCH --mail-type=END,FAIL
 # #SBATCH --mail-user=you@ohsu.edu
 
-set -euo pipefail
+# No `set -e`: the aggregation and the validator each capture their own status,
+# so a nonzero aggregation still reaches the validator and the closing guidance
+# instead of aborting the script silently. Input checks below exit explicitly.
+set -uo pipefail
 
 # --- paths and parameters ----------------------------------------------------
 # A batch job does NOT inherit the shell variables you exported at a prompt, so
@@ -160,10 +163,13 @@ echo "=== pairing started $(date) on $(hostname) ==="
     --max-dense-gb        "$MAX_DENSE" \
     --out                 "$OUT" \
     --diagnostics         pairing_diagnostics
+AGG_RC=$?
 echo "=== pairing finished $(date) ==="
 
 # --- verify the handoff before anything downstream depends on it -------------
 python 03_pipeline/validate_h5mu.py "$OUT"
+VAL_RC=$?
+echo "aggregate exit: $AGG_RC   validate exit: $VAL_RC"
 
 echo
 echo "Next: place $OUT at output_data.combined_GEX_ACC_mudata in the SCENIC+"
@@ -171,3 +177,9 @@ echo "config so snakemake treats prepare_GEX_ACC as already satisfied, then"
 echo "read pairing_diagnostics.csv -- the median_crossmodal_gap column tells"
 echo "you which cell types paired badly, and independent_metacell_equiv is the"
 echo "honest denominator for how well any eRegulon is supported."
+
+if [[ ${AGG_RC:-1} -ne 0 || ${VAL_RC:-1} -ne 0 ]]; then
+    echo "one or more steps failed -- see the exits above" >&2
+    exit 2
+fi
+exit 0
