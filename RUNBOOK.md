@@ -135,6 +135,43 @@ is large for the group's usual pattern but not out of scale for the partition.
 Anything on the `sbatch` command line overrides the directives in the script,
 which is why `pairing.sbatch` deliberately does not hardcode either one.
 
+## Region sets: the gap I only found when writing the config
+
+`input_data.region_set_folder` is a **required** config entry — SCENIC+ globs
+`region_set_folder/<family>/*.bed` and runs one cisTarget/DEM enrichment per
+BED — and nothing in this pipeline produced it. The canonical source is
+`01_cistopic/run_cistopic.py`, which at this reference's scale means a ~40 GB
+Matrix Market export of 393,832 × 163,969 followed by MALLET LDA: hours to days,
+Java heap controllable only through `MALLET_MEMORY`.
+
+The config's own comments name `DARs_cell_type` as a valid region-set family
+alongside `topics_otsu`. Per-cell-type DARs are computable directly from
+`ACC_GEX.h5mu` — 25,323 metacells already grouped — streaming in blocks, ~2 GB
+resident, one batch job:
+
+```bash
+sbatch slurm/region_sets.sbatch
+```
+
+**What this gives up, stated plainly.** Topics are unsupervised co-accessibility
+programs; they can span cell types, split one label into sub-programs, or track a
+gradient no label names. DARs are label-driven by construction, so any regulatory
+program not aligned to `predicted_CellType_Broad` gets no region set — and an
+eRegulon can only be found for a program some region set represents. A DAR-only
+run finds cell-type-associated eRegulons well and shared or continuous ones
+poorly. Region sets are also the runtime driver, so 24 DAR sets is much cheaper
+than 100+ topics, which is part of why it finds less.
+
+For a healthy hematopoietic reference where the question is *which TFs drive
+which cell type*, DARs are the aligned choice. Topics can be added later as a
+second subdirectory; the DAG runs both families.
+
+Validated on fixtures with planted ground truth: perfect recovery (precision and
+recall 1.000 on 1,800 planted regions across 6 groups) and zero regions with an
+explicit warning under a null. `--min-metacells 5` skips Pro-Monocyte (1) and
+Late GMP (3) — groups whose eRegulons `docs/QC_RESULT.md` already flagged as
+unsupported.
+
 ## Which env does each step need?
 
 Two environments, and the split is deliberate — the light steps must not be
