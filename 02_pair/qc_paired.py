@@ -328,16 +328,57 @@ def main():
                    "mark -- suspect the labels, not the pairing")
     lk = rep["checks"]["linkage"]
     if lk["frac_beating_null_p95"] is not None:
-        if lk["frac_beating_null_p95"] < 0.30:
-            v = "FAIL"
-            why.append(f"only {lk['frac_beating_null_p95']:.0%} of marker loci beat "
-                       "their accessibility-matched null -- region-to-gene inference "
-                       "will not work on this object")
-        elif lk["frac_beating_null_p95"] < 0.50:
+        # Judge against CHANCE, not a fixed fraction. Beating one's own null 95th
+        # percentile happens 5% of the time under the null, so the question is
+        # whether the observed rate is enriched over 0.05 -- a binomial test.
+        #
+        # A fixed threshold was wrong here: it was calibrated on a simulation
+        # whose decoy median rho was ~0, but real metacells are grouped BY CELL
+        # TYPE, and peaks and genes share lineage programs, so a distal peak
+        # correlates with an unrelated gene at rho ~0.2. Verified by simulation
+        # that this inflates the absolute rho of BOTH true and decoy sets while
+        # leaving the per-gene beat rate calibrated at ~5-9%: the absolute
+        # numbers do not transfer between datasets, but the enrichment does.
+        n_t = lk["n_markers_tested"]
+        frac = lk["frac_beating_null_p95"]
+        n_hit = int(round(frac * n_t))
+        try:
+            from scipy.stats import binomtest
+            p_enrich = float(binomtest(n_hit, n_t, 0.05,
+                                       alternative="greater").pvalue)
+        except Exception:                                      # pragma: no cover
+            p_enrich = None
+        lk["n_beating_null"] = n_hit
+        lk["enrichment_over_chance"] = round(frac / 0.05, 2)
+        lk["binomial_p_vs_chance"] = p_enrich
+        if p_enrich is not None and p_enrich < 1e-4 and frac >= 0.15:
+            pass                                    # decisive locus-specific signal
+        elif p_enrich is not None and p_enrich < 0.05:
             if v == "PASS":
                 v = "WARN"
-            why.append(f"{lk['frac_beating_null_p95']:.0%} of marker loci beat the "
-                       "null -- weaker than expected; treat distal links cautiously")
+            why.append(
+                f"{n_hit}/{n_t} marker loci beat their own null p95 "
+                f"({frac:.0%}, {frac/0.05:.1f}x chance, p={p_enrich:.1e}) -- "
+                "significant but modest; distal links deserve more scepticism "
+                "than proximal ones")
+        else:
+            v = "FAIL"
+            why.append(
+                f"only {n_hit}/{n_t} marker loci beat their own null p95 "
+                f"({frac:.0%}, {frac/0.05:.1f}x chance"
+                + (f", p={p_enrich:.2g}" if p_enrich is not None else "")
+                + ") -- not distinguishable from chance, so region-to-gene "
+                "inference will not work on this object")
+        # The absolute medians are informative but must not be read as effect
+        # sizes: a high decoy median means shared cell-type structure, not a
+        # broken pairing.
+        if (lk["median_rho_null"] is not None
+                and lk["median_rho_null"] > 0.10):
+            why.append(
+                f"note: decoy median rho is {lk['median_rho_null']} -- peaks and "
+                "genes share strong lineage structure, so absolute rho is "
+                "inflated for true AND decoy loci alike. Judge by the "
+                "enrichment above, not by the raw correlation.")
     rep["verdict"] = v
     rep["reasons"] = why
 
@@ -379,9 +420,21 @@ def main():
           "accessibility-matched peaks on other chromosomes.", ""]
     if lk["median_rho_true"] is not None:
         L += [f"- median rho at the true locus: **{lk['median_rho_true']}**",
-              f"- median rho for matched decoys: {lk['median_rho_null']}",
+              f"- median rho for matched decoys: {lk['median_rho_null']}"
+              + ("  *(inflated by shared lineage structure -- see the note above)*"
+                 if (lk['median_rho_null'] or 0) > 0.10 else ""),
               f"- markers beating their own null 95th percentile: "
-              f"**{lk['frac_beating_null_p95']:.0%}** of {lk['n_markers_tested']}",
+              f"**{lk.get('n_beating_null', '?')}/{lk['n_markers_tested']} "
+              f"= {lk['frac_beating_null_p95']:.0%}**"
+              + (f", i.e. **{lk['enrichment_over_chance']}x chance** "
+                 f"(binomial p={lk['binomial_p_vs_chance']:.2g})"
+                 if lk.get('binomial_p_vs_chance') is not None else ""),
+              "",
+              "  The 5% expected under the null is the reference, not 50%: each "
+              "gene is tested against its OWN decoys, so the enrichment over "
+              "chance is the quantity that transfers between datasets. Absolute "
+              "rho does not.",
+              "",
               f"- markers with no peak in window: {lk['n_markers_no_peaks']}", ""]
         top = sorted([r for r in lk["detail"] if r.get("rho_true") is not None],
                      key=lambda r: -r["rho_true"])[:10]
