@@ -23,7 +23,10 @@
 # sizing attempt and the first was killed.
 #
 # Time is MEASURED: 2.14 ms per region for ranks+ties+all 24 groups at
-# 25,323 metacells -> ~14 min for 393,832 regions, unchanged by the memory fix
+# 25,323 metacells -> ~14 min for 393,832 regions IN ISOLATION. MEASURED on the
+# real object: 42m43s (job 10714858), 3x my projection -- the per-block timing
+# omitted reading each block from the backed object and the BH/selection pass.
+# 2h still holds, at a 2.8x margin rather than the 8x I claimed
 # (the combined routine is ~30% slower per block than rankdata alone, but it
 # replaces rankdata AND a second np.sort). 2h is an ~8x margin, which matters
 # because BEDs are written only at the end, so a walltime kill loses everything.
@@ -63,6 +66,11 @@ fi
 PAIRED="${PAIRED:-ACC_GEX.h5mu}"
 GROUP_KEY="${GROUP_KEY:-predicted_CellType_Broad}"
 OUTDIR="${REGION_SET_DIR:-01_atac/region_sets}"
+# Keep the effect-size/q-value dump by default. 63 MB uncompressed buys every
+# future threshold question offline; without it, changing --min-log2fc costs
+# another 43-minute pass over the matrix. See docs/REGION_SETS.md -- the first
+# real run capped 20 of 21 groups, so the threshold WILL need revisiting.
+DUMP_STATS="${DUMP_STATS:-01_atac/dar_stats.npz}"
 # The pairing job's diagnostics carry independent_metacell_equiv, the honest
 # per-group denominator. Without it the script falls back to
 # metacells/oversample, which is APPROXIMATE and skips fewer groups.
@@ -126,6 +134,7 @@ python 01_cistopic/region_sets_from_metacells.py \
     --fdr "${DAR_FDR:-0.05}" \
     --max-regions "${MAX_REGIONS:-20000}" \
     --min-independent "${MIN_INDEPENDENT:-5}" \
+    ${DUMP_STATS:+--dump-stats "${DUMP_STATS}"} \
     ${DIAGNOSTICS:+--diagnostics "${DIAGNOSTICS}"}
 RS_RC=$?
 echo "generator exit: ${RS_RC}"

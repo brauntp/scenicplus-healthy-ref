@@ -53,7 +53,7 @@ Predictions vs `sacct` MaxRSS, so future estimates can be calibrated:
 | QC, first attempt | 32G | — | OOM-killed at 27.7 GB | too small |
 | QC (`qc_paired.sbatch`) | 96G | ~80.7 GB | **43.2 GB** (45%) | **1.87x over** |
 | region sets, first attempt | 16G | "flat ~2 GB" | **OOM-killed (exit 137)** | **~5x under** |
-| region sets (`region_sets.sbatch`) | 32G | 2.45 GB measured | *pending* | — |
+| region sets (`region_sets.sbatch`) | 32G | 2.45 GB measured | **2.80 GB** (9%) | **14% over — first close one** |
 
 **The lesson from the region-set OOM.** I sized `--mem` from the streaming
 block's own size (1.89 GB at 20,000 regions × 25,323 metacells) and called the
@@ -69,8 +69,9 @@ the block's dtype — 2.45 GB for a 4,000-region block, with ranks identical to
 falls with block size because the per-column loop's temporaries don't scale with
 it.
 
-All three resolved predictions in this table were wrong, in both directions
-(15% under, 1.87x over, ~5x under). The
+Four resolved predictions, and the only one within 20% is the one taken from a
+direct measurement of the actual code path rather than from arithmetic about it
+(15% under, 1.87x over, ~5x under, 14% over). The
 pattern is not arithmetic error — it is asserting an access pattern instead of
 measuring one. `03_pipeline/probe_region_to_gene_memory.py` exists for exactly
 this reason, and the same discipline should apply before every remaining

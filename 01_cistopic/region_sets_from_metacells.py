@@ -224,6 +224,14 @@ def _build_parser():
                          "ranks, a stable argsort (int64) and the gathered "
                          "sorted copy. 4,000 x 25,323 measured 2.45 GB; 20,000 "
                          "measured 9.59 GB and was OOM-killed at 16G.")
+    ap.add_argument("--dump-stats", type=Path, default=None,
+                    help="write per-group effect sizes and q-values to this "
+                         ".npz alongside the BEDs. 21 groups x 393,832 regions "
+                         "of float32, twice (effects and q-values), is 63 MB "
+                         "uncompressed and less on disk. It makes every threshold "
+                         "question answerable OFFLINE instead of costing "
+                         "another 14-minute pass. Strongly recommended on the "
+                         "first run for a new object.")
     ap.add_argument("--dry-run", action="store_true",
                     help="report groups, counts and footprint; write nothing")
     ap.add_argument("--self-test", action="store_true",
@@ -428,6 +436,40 @@ def main():
                                 dict(zip(groups, indep))[g])))
         print(f"  {g:<26} {idx.size:>6,} regions"
               + ("  (capped)" if capped else ""))
+
+    n_capped = sum(1 for x in summary if x["capped"])
+    if n_capped:
+        print()
+        print(f"  WARNING: {n_capped} of {len(summary)} groups hit "
+              f"--max-regions={args.max_regions:,}.")
+        if n_capped > len(summary) / 2:
+            print("           When most groups cap, the CAP is selecting the "
+                  "regions, not your")
+            print("           thresholds -- each set is an arbitrary top-N "
+                  "slice by effect size,")
+            print("           and the number 20,000 has no biological meaning. "
+                  "At 25,323")
+            print("           metacells an FDR filter cannot bind (a 2% shift "
+                  "in probability-")
+            print("           of-superiority gives p~1e-2, a 5% shift p~4e-8), "
+                  "so --min-log2fc")
+            print("           is the only real filter. Raise it until the caps "
+                  "clear:")
+            print("           re-run with --dump-stats to choose it from the "
+                  "measured")
+            print("           distribution rather than by guessing.")
+
+    if args.dump_stats is not None:
+        args.dump_stats.parent.mkdir(parents=True, exist_ok=True)
+        np.savez_compressed(
+            args.dump_stats,
+            groups=np.array(list(kept_groups)),
+            eff=np.vstack([eff[g] for g in kept_groups]).astype(np.float32),
+            q=np.vstack([bh(pv[g]) for g in kept_groups]).astype(np.float32),
+            chrom=chrom, start=start, end=end)
+        print(f"  stats   : {args.dump_stats} "
+              f"({args.dump_stats.stat().st_size / 1024**2:.1f} MB) -- "
+              f"threshold sweeps need no re-run")
 
     (args.out_dir / f"{args.family}.summary.json").write_text(
         json.dumps(dict(source=str(args.h5mu), group_key=args.group_key,

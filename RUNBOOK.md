@@ -202,9 +202,12 @@ independent count. Its exclusion here follows the same rule, not a prior
 finding.
 
 **Runtime and memory, both measured — and both wrong on the first attempt.**
-Current figures: 2.14 ms per region for ranks, ties and all 24 groups → ~14 min
-for 393,832 regions against a 2 h walltime, peaking at 2.45 GB per 4,000-region
-block against 32G.
+Measured on the real object (job 10714858): **42m43s, MaxRSS 2.80 GB** against
+a 2 h walltime and 32G. Memory came in 14% over my 2.45 GB projection — the
+first estimate in this project to land close, and the only one taken from
+measuring the actual code path rather than reasoning about it. Runtime was 3×
+under: I timed the per-block compute in isolation (2.14 ms per region) and
+ignored reading each block from the backed object plus the BH/selection pass.
 
 Two prior versions were killed, for reasons worth keeping:
 
