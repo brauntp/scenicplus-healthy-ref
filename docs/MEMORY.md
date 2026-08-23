@@ -59,10 +59,19 @@ second copy during the NaN scan. Actual overhead above resident was 2.8 GB (7%),
 so the scan works in chunks. A "one full copy" assumption is the wrong default
 for a *scan*.
 
-It is not the wrong default for `.to_df()`, which genuinely does build a new
-DataFrame — so the SCENIC+ region-to-gene estimate below keeps the 2x
-assumption, but with this measurement as a reason to check MaxRSS on the first
-run rather than trusting the projection.
+**It is also the wrong default for `.to_df()`** — which is what I assumed next,
+and it was wrong for the same reason. Superseded: the paragraph that once stood
+here argued the region-to-gene estimate should keep a 2× assumption because
+`.to_df()` "genuinely does build a new DataFrame". It does not, on a dense
+float32 modality: the returned frame shares memory with the AnnData's X
+(`np.shares_memory(...)` is True) and adds +0.00 GB. Measured overhead 1.07×,
+not 2×, giving `--mem=54G` rather than 96G. See the section at the top of this
+file for the numbers.
+
+The generalisation worth keeping: **"one full copy" is the wrong default for any
+access pattern you have not measured** — a chunked scan, a block-sharing frame
+constructor. Measure it (`03_pipeline/probe_region_to_gene_memory.py`) instead of
+choosing an assumption.
 
 The pairing job's 63.5 GB against a 55 GB prediction is the opposite error and
 the more dangerous one: 15% under. Its dense output arithmetic was exact
@@ -72,7 +81,23 @@ the more dangerous one: 15% under. Its dense output arithmetic was exact
 
 # Memory planning: the imputed-accessibility step
 
-**This is the step most likely to kill a cluster job.** Read before submitting.
+> **NOT ON THE PATH THIS PROJECT TOOK — kept for reference only.**
+>
+> This section describes `impute_accessibility`, the step SCENIC+'s stock
+> unpaired path runs before building metacells. This pipeline does **not** call
+> it: at 163,969 cells × 393,832 peaks a dense `int32` matrix is ~240 GB, which
+> is unrunnable here. Because mean aggregation is linear, `02_pair/
+> aggregate_atac_sparse.py` aggregates the **raw sparse counts** instead, which
+> was verified numerically identical to densify-then-average. The pairing job
+> then ran in 63.5 GB.
+>
+> The `~2×` transpose budget quoted below is an **unmeasured** projection of the
+> same kind that overshot the QC job by 1.87× and the region-to-gene estimate by
+> 2.2×. Treat every figure in this section as an order-of-magnitude sketch, and
+> if you ever do take this path, measure it rather than trusting the table.
+
+**If you take the stock path, this is the step most likely to kill a cluster
+job.**
 
 `pycisTopic.diff_features.impute_accessibility` returns a **dense**
 `regions x cells` matrix (`int32` when `scale_factor` is an integer, which the
@@ -89,9 +114,13 @@ building metacells, and `02_pair/glue_metacells.py` consumes the result.
 | 100,000 | 56 GB | 93 GB | 149 GB |
 | 200,000 | 112 GB | 186 GB | 298 GB |
 
-The paired object is written **cells × regions**, so a transpose is live at the
-same time: **budget ~2× the table above** for peak RSS. A 100k-cell reference on
-a 250k-peak set needs roughly 190 GB — more than a standard compute node.
+The paired object is written **cells × regions**, so a transpose may be live at
+the same time. The old advice here was to budget ~2× the table above — but that
+factor is **assumed, never measured**, and assumed copy factors are what
+overshot the QC job by 1.87× and the region-to-gene estimate by 2.2×. If you
+take this path, measure the transpose rather than doubling: a 100k-cell
+reference on a 250k-peak set is 93 GB for one matrix, and whether the peak is
+93 or 186 GB decides whether it fits a standard compute node.
 
 ### Mitigations, in order of preference
 
@@ -110,8 +139,9 @@ a 250k-peak set needs roughly 190 GB — more than a standard compute node.
    quantizes low probabilities to zero, and `10**6` is chosen to make that
    quantization useful. Do not change it expecting a memory win.
 4. **Request the memory.** If the reference is small enough (≤50k cells), a
-   high-memory partition is the simplest answer. Set `--mem` from the table
-   above, doubled.
+   high-memory partition is the simplest answer. Size `--mem` from a measured
+   run, not from the table doubled — see the note above on assumed copy
+   factors.
 
 ### Unrelated but adjacent: MALLET
 
