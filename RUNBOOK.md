@@ -93,6 +93,33 @@ the scripts now catch that and say so, but sourcing the file avoids it entirely.
 `slurm/pairing.sbatch` sources it too, since a batch job does not inherit the
 submitting shell's variables either. Edit `setenv.sh` rather than the sbatch.
 
+## Which account and partition?
+
+```bash
+bash slurm/whoami_slurm.sh
+```
+
+Read-only. It reports what your own recent jobs used (`sacct` — the most
+reliable answer, since those submissions demonstrably worked), which accounts
+you're associated with (`sacctmgr`), the partition list with the default
+marked, and which partitions have ≥80 GB per node and a walltime cap above
+4 hours — both of which the pairing job needs.
+
+If your site sets a default account and partition, no flags are needed at all:
+
+```bash
+sbatch slurm/pairing.sbatch
+```
+
+Otherwise pass what the script reports:
+
+```bash
+sbatch --account=<acct> --partition=<part> slurm/pairing.sbatch
+```
+
+Anything on the `sbatch` command line overrides the directives in the script,
+which is why `pairing.sbatch` deliberately does not hardcode either one.
+
 ## Which env does each step need?
 
 Two environments, and the split is deliberate — the light steps must not be
