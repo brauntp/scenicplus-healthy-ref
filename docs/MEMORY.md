@@ -1,38 +1,45 @@
-# The ~96G region-to-gene figure is probably too high
+# The ~96G region-to-gene figure was 2.2× too high — measured on the cluster
 
-That number came from assuming `.to_df()` builds a full copy on top of the
-40.4 GB resident object. **Measured, it does not.** On a dense float32 `.h5mu`,
-`.to_df()` returns a frame that shares memory with the AnnData's X
-(`np.shares_memory(...)` is True) and adds +0.00 GB resident.
+The probe ran on the real object in the real environment:
 
-| assumption | implied peak | implied `--mem` |
-|---|---|---|
-| `.to_df()` copies (the old projection) | 80.8 GB | ~101G |
-| measured overhead factor 1.34× | 54.1 GB | ~68G |
+| | |
+|---|---|
+| dense equivalent (25,323 × 34,112 + 25,323 × 393,832, float32) | 40.4 GB |
+| loaded subset (scRNA whole + 20,000 of 393,832 ATAC columns) | 5.10 GB |
+| peak RSS including both `.to_df()` calls | 5.46 GB |
+| **measured overhead factor** | **1.07×** |
+| extrapolated full-object peak | **43.2 GB** |
+| suggested `--mem` (peak + 25%) | **54G** |
 
-This is the third time an assumed access pattern was the error rather than the
-arithmetic, so the figure is **not** being lowered on this observation alone.
-Two things could invalidate it:
+**Two independent measurements agree.** The QC job's `sacct` MaxRSS —
+`mudata.read()` plus a full NaN scan — was 43.2 GB. The probe's extrapolation,
+`mudata.read()` plus both `.to_df()` calls, is also 43.2 GB. Different code
+paths, measured days apart, both landing at ~1.07× the dense size. That is the
+object being resident and essentially nothing else: `.to_df()` and the NaN scan
+each add ~3 GB, not 40.
 
-1. The no-copy behaviour depends on the pandas/anndata versions in the SCENIC+
-   environment — a different env from the one measured. A version that
-   consolidates blocks would copy.
-2. `region_to_gene` forks joblib workers that memory-map per-worker slices from
-   `temp_dir`. The parent's peak is a **floor**, not a ceiling.
+The mechanism, confirmed directly: `.to_df()` on a dense float32 modality
+returns a frame that **shares memory** with the AnnData's X
+(`np.shares_memory(...)` is True) and adds +0.00 GB. There is no second copy.
+The original 96G came from assuming there was — the same class of error as the
+QC overshoot, and the third time an assumed access pattern was the mistake
+rather than the arithmetic.
 
-So measure it there instead of projecting again:
+Set `--mem=54G`, not 96G. **One caveat that keeps this a floor:**
+`region_to_gene` forks joblib workers that memory-map per-worker slices from
+`temp_dir`. The parent's peak is what was measured; the workers add on top. If
+the SCENIC+ job OOMs, that is where the extra went — raise `--mem` and lower
+`--cpus-per-task` together, since worker count scales with cores.
 
 ```bash
-# cheap, seconds, from a login node
+# cheap, seconds, login-node safe — what produced the numbers above
 python 03_pipeline/probe_region_to_gene_memory.py --h5mu ACC_GEX.h5mu
 
-# authoritative: in the SCENIC+ env, in a job sized generously
+# authoritative, in the SCENIC+ env once it exists
 python 03_pipeline/probe_region_to_gene_memory.py --h5mu ACC_GEX.h5mu --full
 ```
 
-It reports peak RSS and a suggested `--mem`. Set the SCENIC+ job from that,
-then check `sacct` MaxRSS against it afterwards and add the row to the table
-below.
+Check `sacct` MaxRSS afterwards and add the row to the table below.
 
 ---
 

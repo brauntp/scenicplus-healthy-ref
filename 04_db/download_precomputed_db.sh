@@ -128,7 +128,16 @@ usage() { sed -n '2,/^set -o errexit/p' "${0}" | sed 's/^# \{0,1\}//; $d'; exit 
 
 while [ "${#}" -gt 0 ]; do
     case "${1}" in
-        --dest)          DEST="${2:?--dest needs a value}"; shift 2 ;;
+        # Normalise the path so a '..' segment cannot silently resolve into
+        # somewhere you did not mean. `$REF/../cistarget_db` looks like a
+        # sibling of your own output directory, but $REF points into a shared
+        # scratch tree, so it resolved into a COLLEAGUE'S directory and failed
+        # on permissions after printing a plan that looked fine.
+        --dest)          DEST="${2:?--dest needs a value}"
+                         if [ -d "$(dirname "$DEST")" ]; then
+                             DEST="$(cd "$(dirname "$DEST")" && pwd)/$(basename "$DEST")"
+                         fi
+                         shift 2 ;;
         --skip-scores)   SKIP_SCORES=1; shift ;;
         --skip-motif2tf) SKIP_MOTIF2TF=1; shift ;;
         --no-verify)     VERIFY=0; shift ;;
@@ -227,8 +236,38 @@ PLAN
 if [ "${DRY_RUN}" -eq 0 ]; then
     mkdir -p "${DEST}" || die "cannot create destination: ${DEST}"
     [ -w "${DEST}" ]   || die "destination not writable: ${DEST}"
+else
+    # A dry run must answer "would this work?", not merely "does it exist?".
+    # Reporting "does not exist yet" and exiting 0 is exactly what let a
+    # permission failure through to the real run: the plan looked fine, then
+    # mkdir failed on a directory owned by someone else. Walk up to the nearest
+    # existing ancestor and test whether WE could create the leaf under it.
+    probe="${DEST}"
+    while [ ! -d "${probe}" ] && [ "${probe}" != "/" ]; do
+        probe="$(dirname "${probe}")"
+    done
+    if [ ! -d "${probe}" ]; then
+        die "--dry-run: no existing ancestor of ${DEST} -- path is not valid"
+    fi
+    if [ -d "${DEST}" ]; then
+        if [ -w "${DEST}" ]; then
+            log "--dry-run: ${DEST} exists and is writable"
+        else
+            die "--dry-run: ${DEST} exists but is NOT writable by ${USER}
+       owner: $(stat -c '%U:%G %A' "${DEST}" 2>/dev/null || echo unknown)
+       Pick a destination you own, e.g. --dest \$HOME/cistarget_db or a
+       directory under your own project root."
+        fi
+    elif [ -w "${probe}" ]; then
+        log "--dry-run: ${DEST} would be created under ${probe} (writable)"
+    else
+        die "--dry-run: cannot create ${DEST}
+       nearest existing ancestor ${probe} is NOT writable by ${USER}
+       owner: $(stat -c '%U:%G %A' "${probe}" 2>/dev/null || echo unknown)
+       This is the failure the real run would hit. Pick a destination you
+       own -- note that a '..' in --dest may resolve outside your own tree."
+    fi
 fi
-[ -d "${DEST}" ] || { log "--dry-run: ${DEST} does not exist yet"; }
 
 if [ -d "${DEST}" ]; then
     AVAIL_KB="$(df -Pk "${DEST}" | awk 'NR==2{print $4}')"

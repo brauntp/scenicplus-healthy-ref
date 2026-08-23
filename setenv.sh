@@ -28,6 +28,21 @@ export MIN_CELLS=50
 
 # --- outputs -----------------------------------------------------------------
 export LABELS=atac_labels.tsv
+
+# -- cisTarget database location ---------------------------------------------
+# 45.8 GiB (both feathers + motif table); the download script wants 50.8 GiB
+# with its margin. Put this in the PROJECT ROOT, not node-local scratch: the
+# rankings feather is read memory-resident by pycistarget -- loaded whole, a
+# handful of large sequential reads per rule -- so locality buys nothing, while
+# a purge policy would cost a 46 GiB re-download. What genuinely wants
+# node-local scratch is params_general.temp_dir, where joblib memory-maps
+# per-worker slices during region_to_gene; scenicplus.sbatch auto-detects that
+# separately.
+#
+# NOTE: do not write this as "$REF/../cistarget_db". $REF points into a shared
+# scratch tree, so the '..' resolves into another user's directory -- that is
+# how the first download attempt died on permissions.
+export CISTARGET_DB="${CISTARGET_DB:-$PWD/resources/cistarget_db}"
 export PAIRED=ACC_GEX.h5mu
 
 # --- verify, don't assume ----------------------------------------------------

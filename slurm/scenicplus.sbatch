@@ -32,7 +32,10 @@
 # one node buys nothing and just makes the job harder to schedule.
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=<N_CPU>          # e.g. 32 or 48; feeds --cores AND config n_cpu
+# 16, not 32+: worker count scales with cores and each joblib worker adds to
+# the 43.2 GB parent, so cores and --mem trade off. Raise with --mem together.
+# Override at submit: sbatch --cpus-per-task=32 --mem=96G slurm/scenicplus.sbatch
+#SBATCH --cpus-per-task=16               # feeds snakemake --cores AND config n_cpu
 
 # --- memory ------------------------------------------------------------------
 # Ask for a lot, and understand which term dominates. Two independent reasons:
@@ -65,7 +68,17 @@
 # Start at 240G. If the job dies with no python traceback -- just "Killed" or a
 # bare nonzero exit -- that is the OOM killer, not a bug: check
 # `seff $SLURM_JOB_ID` / `sacct -j $SLURM_JOB_ID -o MaxRSS` and raise.
-#SBATCH --mem=<MEM>                      # e.g. 240G
+# MEASURED, not projected: 54G. The paired object is 40.4 GB dense and the
+# probe measured a 1.07x overhead through both .to_df() calls (peak 43.2 GB,
+# +25% headroom). The QC job independently hit 43.2 GB MaxRSS on the same
+# object. An earlier projection said 96G on the assumption that .to_df()
+# copies; it does not -- the frame shares memory with X.
+#
+# This is a FLOOR: region_to_gene forks joblib workers that memory-map
+# per-worker slices from temp_dir, on top of the parent. If this OOMs, raise
+# --mem and lower --cpus-per-task together -- worker count scales with cores.
+# See docs/MEMORY.md and 03_pipeline/probe_region_to_gene_memory.py.
+#SBATCH --mem=54G
 
 # --- walltime ----------------------------------------------------------------
 # region_to_gene and the two eGRN/GSEA rules dominate. With a few hundred
@@ -73,7 +86,10 @@
 # order of 12-24 h and set the ceiling generously -- a walltime kill mid-GBM
 # wastes the whole run, and `run_pipeline.sh` can resume from completed outputs
 # (that is part of why it pins --rerun-triggers mtime).
-#SBATCH --time=<HH:MM:SS>                # e.g. 24:00:00
+# 24h. The pairing job took 19 min and QC 13 min, but those are single steps;
+# this DAG runs cisTarget and DEM over 1.8M database regions plus a GBM fit per
+# gene. A walltime kill mid-GBM loses the whole rule, so err long.
+#SBATCH --time=24:00:00
 
 # --- logs --------------------------------------------------------------------
 # %x = job name, %j = job id. Directory must EXIST before submit or slurm

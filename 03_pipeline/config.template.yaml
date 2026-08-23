@@ -113,7 +113,13 @@ input_data:
   # -- Motif-to-TF annotation table (motifs-v10nr_clust-nr.hgnc-m0.001-o0.0.tbl
   #    for human). Must match `params_motif_enrichment.annotation_version`
   #    below and the motif collection the databases were built from.
-  path_to_motif_annotations: "<ABS_PATH>/resources/motif_annotations/motifs-v10nr_clust-nr.hgnc-m0.001-o0.0.tbl"
+  # NOTE: download_precomputed_db.sh places all three files -- both feathers
+  # AND this table -- in a SINGLE --dest directory. The path below therefore
+  # points at the same directory as ctx_db_fname/dem_db_fname above. An
+  # earlier version pointed at a separate resources/motif_annotations/,
+  # which no step creates, so the motif-enrichment rule would have failed
+  # on a missing file after cisTarget had loaded a 33 GiB database.
+  path_to_motif_annotations: "<ABS_PATH>/resources/cistarget_db/motifs-v10nr_clust-nr.hgnc-m0.001-o0.0.tbl"
 
 
 output_data:
