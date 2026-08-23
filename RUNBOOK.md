@@ -244,7 +244,9 @@ Read the VERDICT block. Then either:
 ```bash
 # (a) precomputed is good enough -> download it (~33 GiB + ~13 GiB, resumable)
 bash 04_db/download_precomputed_db.sh --dest /path/to/db
-#   --dry-run to preview, --skip-scores if you only need cisTarget (not DEM)
+#   --dry-run to preview. Do NOT pass --skip-scores on a stock checkout: DEM's
+#   outputs are unconditional targets in the Snakefile, so the pipeline would
+#   fail at the DEM rule after cisTarget had already spent its hours.
 
 # (b) dropout too high -> build a custom DB on your own peaks
 sbatch --account=<ARC_ACCOUNT> --partition=<ARC_PARTITION> \

@@ -90,7 +90,17 @@ set -Eeuo pipefail
 CONFIG="${1:?usage: sbatch slurm/scenicplus.sbatch <config.yaml>}"
 
 REPO_ROOT="${SLURM_SUBMIT_DIR:-$(pwd)}"
-cd "$REPO_ROOT"
+cd "$REPO_ROOT" || exit 1
+
+# A batch job does not inherit what you exported at a prompt, so read the
+# project's settings from the file. Same pattern as pairing.sbatch.
+if [[ -f setenv.sh ]]; then
+    # shellcheck disable=SC1091
+    source setenv.sh
+else
+    echo "ERROR: setenv.sh not found in $REPO_ROOT" >&2
+    exit 1
+fi
 
 echo "==============================================================="
 echo "job            : ${SLURM_JOB_NAME:-scenicplus} (${SLURM_JOB_ID:-nojob})"
@@ -108,12 +118,11 @@ echo "==============================================================="
 # PATH. The env therefore MUST be active in this shell before snakemake starts.
 # `conda activate` needs the hook; `conda run` does not work here because we
 # need the env live for the child shells snakemake spawns.
-CONDA_BASE="<CONDA_BASE>"                # e.g. /home/<user>/miniforge3  (output of `conda info --base`)
-CONDA_ENV="<CONDA_ENV_NAME>"             # e.g. scenicplus (see 03_pipeline/environment.yml)
-
-# ARC-style module setup, if your site needs it. Delete if not applicable.
-# module purge
-# module load <MODULE_FOR_CONDA>
+# Read from setenv.sh (sourced above) so this file needs no editing, matching
+# pairing.sbatch and qc_paired.sbatch -- the two scripts that have actually run
+# on this cluster. Override by exporting either variable before sbatch.
+CONDA_BASE="${SCPLUS_CONDA_BASE:-/home/groups/MaxsonLab/braun/miniconda3}"
+CONDA_ENV="${SCPLUS_ENV:-scenicplus}"    # see 03_pipeline/environment.yml
 
 if [[ ! -f "${CONDA_BASE}/etc/profile.d/conda.sh" ]]; then
     echo "ERROR: no conda hook at ${CONDA_BASE}/etc/profile.d/conda.sh" >&2

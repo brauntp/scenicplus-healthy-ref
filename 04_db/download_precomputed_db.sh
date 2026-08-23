@@ -25,9 +25,13 @@
 #
 #   TOTAL DOWNLOAD                                            49,173,944,217  45.8 GiB
 #
-# The rankings feather is what SCENIC+/pycistarget consumes. The scores feather
-# is only needed for DEM (differential enrichment) -- skip it with
-# --skip-scores and save 13 GB.
+# BOTH feathers are required by the default SCENIC+ Snakemake DAG. cisTarget
+# reads the RANKINGS file; DEM reads the SCORES file -- and DEM is not optional:
+# the Snakefile lists dem_results.hdf5 and dem_results.html as unconditional
+# `output:` entries, so snakemake will run the DEM rule and fail on a missing
+# scores feather. --skip-scores exists for the case where you have edited the
+# workflow to drop DEM; on a stock checkout it produces a pipeline that dies
+# partway through, after cisTarget has already spent its hours.
 #
 # DATABASE CONTENT (decoded from the Arrow schema/footer of the scores file):
 #   1,837,304 regions x 5,876 motif rows. Regions are SCREEN cCREs on the 24
@@ -210,8 +214,10 @@ cat >&2 <<PLAN
 total       : ${TOTAL_GIB} GiB (${TOTAL_BYTES} bytes)
 disk needed : ${TOTAL_GIB} GiB + ${DISK_MARGIN_GB} GiB margin
 
-note: the rankings feather alone is enough for SCENIC+/pycistarget.
-      Pass --skip-scores to omit the 12.9 GiB scores file (DEM only).
+note: BOTH feathers are needed by the stock Snakemake DAG. cisTarget reads
+      the rankings file, DEM reads the scores file, and DEM's outputs are
+      unconditional targets in the Snakefile -- so --skip-scores yields a
+      pipeline that fails at the DEM rule unless you have edited the workflow.
 ========================================================================
 PLAN
 

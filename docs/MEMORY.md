@@ -1,3 +1,41 @@
+# The ~96G region-to-gene figure is probably too high
+
+That number came from assuming `.to_df()` builds a full copy on top of the
+40.4 GB resident object. **Measured, it does not.** On a dense float32 `.h5mu`,
+`.to_df()` returns a frame that shares memory with the AnnData's X
+(`np.shares_memory(...)` is True) and adds +0.00 GB resident.
+
+| assumption | implied peak | implied `--mem` |
+|---|---|---|
+| `.to_df()` copies (the old projection) | 80.8 GB | ~101G |
+| measured overhead factor 1.34× | 54.1 GB | ~68G |
+
+This is the third time an assumed access pattern was the error rather than the
+arithmetic, so the figure is **not** being lowered on this observation alone.
+Two things could invalidate it:
+
+1. The no-copy behaviour depends on the pandas/anndata versions in the SCENIC+
+   environment — a different env from the one measured. A version that
+   consolidates blocks would copy.
+2. `region_to_gene` forks joblib workers that memory-map per-worker slices from
+   `temp_dir`. The parent's peak is a **floor**, not a ceiling.
+
+So measure it there instead of projecting again:
+
+```bash
+# cheap, seconds, from a login node
+python 03_pipeline/probe_region_to_gene_memory.py --h5mu ACC_GEX.h5mu
+
+# authoritative: in the SCENIC+ env, in a job sized generously
+python 03_pipeline/probe_region_to_gene_memory.py --h5mu ACC_GEX.h5mu --full
+```
+
+It reports peak RSS and a suggested `--mem`. Set the SCENIC+ job from that,
+then check `sacct` MaxRSS against it afterwards and add the row to the table
+below.
+
+---
+
 # Measured memory on this reference (2026-08-23)
 
 Predictions vs `sacct` MaxRSS, so future estimates can be calibrated:
