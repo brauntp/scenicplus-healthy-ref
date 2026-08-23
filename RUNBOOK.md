@@ -105,19 +105,32 @@ you're associated with (`sacctmgr`), the partition list with the default
 marked, and which partitions have ≥80 GB per node and a walltime cap above
 4 hours — both of which the pairing job needs.
 
-**On ARC, as probed 2026-08-23:**
+**Settled — these follow `maxsonBraunLab/cutTag-pipeline`:**
 
 ```bash
-sbatch --account=maxsonlab --partition=batch slurm/pairing.sbatch
+conda activate scplus-pairing      # house style: activate BEFORE sbatch
+mkdir -p jobs                      # once; SLURM will not create it
+sbatch slurm/pairing.sbatch
 ```
 
-`batch` — 142 nodes, 391 GB/node, 36 h cap — comfortably fits the job's 80 GB
-and ~4 h. 1,534 of the 1,535 recorded jobs on this account ran there.
+| setting | value | source |
+|---|---|---|
+| partition | `batch` | `cluster.yaml` `__default__`, and both `run_pipeline_*.sh` wrappers |
+| account | *not set* | no lab script specifies one; the default `maxsonlab` applies |
+| logs | `jobs/<name>_%j.{out,err}` | `cluster.yaml` error/out keys |
+| conda | activate before `sbatch` | `run_pipeline_conda.sh` header comments |
 
-**Pass `--partition` explicitly even though a default exists.** The site default
-is `interactive` (19 nodes, 7-day cap), a pool shared with people waiting at a
-prompt; a multi-hour batch job does not belong there. Relying on the default
-would silently land it in the wrong place.
+`slurm/pairing.sbatch` hardcodes `--partition=batch` accordingly, so no flags
+are needed. `batch` has 142 nodes at 391 GB with a 36 h cap, against this job's
+80 GB and ~4 h.
+
+**Do not rely on the site default partition.** It is `interactive` — 19 nodes,
+shared with people waiting at a prompt — which is why the lab's own scripts all
+name `batch` explicitly. `sacct` confirms it: 1,534 of 1,535 recorded jobs on
+this account ran on `batch`.
+
+The lab's `callpeaks` rule requests 55 G and `diffbind` 40 G, so this job's 80 G
+is large for the group's usual pattern but not out of scale for the partition.
 
 Anything on the `sbatch` command line overrides the directives in the script,
 which is why `pairing.sbatch` deliberately does not hardcode either one.

@@ -3,8 +3,8 @@
 # GLUE-anchored metacell pairing -- SLURM submit script (ARC)
 # =============================================================================
 # Submit:
-#     sbatch --account=<ARC_ACCOUNT> --partition=<ARC_PARTITION> \
-#            slurm/pairing.sbatch
+#     mkdir -p jobs                      # once; SLURM will not create it
+#     sbatch slurm/pairing.sbatch
 #
 # Reads rna.h5ad + atac.h5ad + atac_labels.tsv, writes ACC_GEX.h5mu.
 # NOT a login-node job: it holds ~10 GB of sparse input and allocates ~40 GB of
@@ -24,10 +24,13 @@
 # --mem below, trust the dry run.
 # =============================================================================
 
-# Account and partition are intentionally NOT hardcoded: pass them on the
-# command line, which overrides any directive here anyway.
-#     sbatch --account=... --partition=... slurm/pairing.sbatch
+# Partition and log layout follow maxsonBraunLab/cutTag-pipeline house style:
+# partition "batch", logs under jobs/<name>_%j.{out,err}. No --account: neither
+# cutTag-pipeline's wrappers nor the lab's snakemake SLURM profile set one, and
+# the default account (maxsonlab) applies.
+#     sbatch slurm/pairing.sbatch
 #SBATCH --job-name=glue_pairing
+#SBATCH --partition=batch
 
 # --- one node, one task ------------------------------------------------------
 # The work is a sequence of sparse matrix products (scipy) plus kNN in a 50-dim
@@ -40,8 +43,11 @@
 #SBATCH --mem=80G
 #SBATCH --time=04:00:00
 
-#SBATCH --output=slurm/logs/pairing_%j.out
-#SBATCH --error=slurm/logs/pairing_%j.err
+# jobs/ rather than slurm/logs/, matching cutTag-pipeline. SLURM will NOT
+# create the directory and silently discards output if it is missing, so
+# `mkdir -p jobs` before the first submit (the lab README says the same).
+#SBATCH --output=jobs/pairing_%j.out
+#SBATCH --error=jobs/pairing_%j.err
 # #SBATCH --mail-type=END,FAIL
 # #SBATCH --mail-user=you@ohsu.edu
 
@@ -81,22 +87,29 @@ echo "inputs verified under REF=$REF"
 # succeeds on an unedited checkout -- a literal <TOKEN> is a redirection to a
 # file named TOKEN and makes the file a syntax error, which hides any REAL
 # syntax error until submit time.
-CONDA_MODULE=""                       # e.g. "miniconda3" -- leave empty if conda is already on PATH
-CONDA_BASE="${CONDA_BASE:-$HOME/miniconda3}"
 PAIRING_ENV="scplus-pairing"          # matches 03_pipeline/pairing_env.yml
 
-if [[ -n "$CONDA_MODULE" ]]; then
-    module load "$CONDA_MODULE" || true
-fi
-if [[ -f "$CONDA_BASE/etc/profile.d/conda.sh" ]]; then
-    # shellcheck disable=SC1091
-    source "$CONDA_BASE/etc/profile.d/conda.sh"
+# House style in cutTag-pipeline is to `conda activate` BEFORE sbatch and let
+# the job inherit it (sbatch exports the environment by default). Honour that
+# when it is already active, and fall back to activating here otherwise, so the
+# script works either way.
+if [[ "${CONDA_DEFAULT_ENV:-}" == "$PAIRING_ENV" ]]; then
+    echo "using inherited conda env: $CONDA_DEFAULT_ENV"
 else
-    echo "ERROR: no conda.sh under CONDA_BASE=$CONDA_BASE" >&2
-    echo "       set CONDA_BASE at the top of this script to your conda root" >&2
-    exit 1
+    CONDA_BASE="${CONDA_BASE:-$HOME/miniconda3}"
+    if [[ -f "$CONDA_BASE/etc/profile.d/conda.sh" ]]; then
+        # shellcheck disable=SC1091
+        source "$CONDA_BASE/etc/profile.d/conda.sh"
+        conda activate "$PAIRING_ENV"
+        echo "activated conda env: $PAIRING_ENV (from $CONDA_BASE)"
+    else
+        echo "ERROR: '$PAIRING_ENV' is not active and no conda.sh under" >&2
+        echo "       CONDA_BASE=$CONDA_BASE." >&2
+        echo "       Either 'conda activate $PAIRING_ENV' before sbatch (house" >&2
+        echo "       style), or set CONDA_BASE at the top of this script." >&2
+        exit 1
+    fi
 fi
-conda activate "$PAIRING_ENV"
 
 python -c "import anndata, mudata, scipy, numpy; \
 print('env ok:', 'anndata', anndata.__version__, 'mudata', mudata.__version__, \
@@ -113,7 +126,7 @@ if [[ "$MEM_MB" -gt 0 ]]; then
     echo "job memory ${MEM_MB}M -> --max-dense-gb ${MAX_DENSE}"
 fi
 
-mkdir -p slurm/logs
+mkdir -p jobs
 
 echo "=== pairing started $(date) on $(hostname) ==="
 /usr/bin/time -v python 02_pair/aggregate_atac_sparse.py \
