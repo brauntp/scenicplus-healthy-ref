@@ -118,12 +118,29 @@ print('env ok:', 'anndata', anndata.__version__, 'mudata', mudata.__version__, \
 # --- guard rail --------------------------------------------------------------
 # Refuse rather than get OOM-killed an hour in. 60% of --mem leaves room for the
 # sparse inputs, the h5mu write buffer, and interpreter overhead.
-MEM_MB=$(scontrol show job "$SLURM_JOB_ID" 2>/dev/null \
-         | grep -oE 'mem=[0-9]+[MG]' | head -1 | grep -oE '[0-9]+' || echo 0)
-MAX_DENSE=48
-if [[ "$MEM_MB" -gt 0 ]]; then
-    MAX_DENSE=$(python -c "print(f'{$MEM_MB/1024*0.6:.0f}')")
-    echo "job memory ${MEM_MB}M -> --max-dense-gb ${MAX_DENSE}"
+# Parse the unit -- do not assume MB. 'mem=80G' previously had its 'G' stripped
+# and was read as 80 MB, giving --max-dense-gb 0, which silently DISABLED the
+# guard (0 means "no limit") instead of setting it to 48.
+MEM_RAW=$(scontrol show job "$SLURM_JOB_ID" 2>/dev/null \
+          | grep -oE 'mem=[0-9]+[KMGT]?' | head -1 | sed 's/mem=//')
+MEM_GB=0
+if [[ -n "$MEM_RAW" ]]; then
+    NUM="${MEM_RAW//[!0-9]/}"
+    UNIT="${MEM_RAW//[0-9]/}"
+    case "${UNIT:-M}" in
+        K) MEM_GB=$(( NUM / 1048576 )) ;;
+        M) MEM_GB=$(( NUM / 1024 )) ;;
+        G) MEM_GB=$NUM ;;
+        T) MEM_GB=$(( NUM * 1024 )) ;;
+    esac
+fi
+if [[ "$MEM_GB" -gt 0 ]]; then
+    MAX_DENSE=$(( MEM_GB * 6 / 10 ))
+    echo "job memory ${MEM_RAW} = ${MEM_GB} GB -> --max-dense-gb ${MAX_DENSE}"
+else
+    MAX_DENSE=48
+    echo "could not read job memory (scontrol said '${MEM_RAW:-nothing}');" \
+         "falling back to --max-dense-gb ${MAX_DENSE}"
 fi
 
 mkdir -p jobs
@@ -135,7 +152,7 @@ echo "=== pairing started $(date) on $(hostname) ==="
     --obs-tsv             "$LABELS" \
     --latent-key          X_glue \
     --group-key           "$GROUP_KEY" \
-    --use-raw \
+    `# NO --use-raw: rna.h5ad X is already raw int32 counts and has no .raw` \
     --cells-per-metacell  "$K" \
     --oversample          "$OVERSAMPLE" \
     --min-metacells-per-group "$FLOOR" \

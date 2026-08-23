@@ -61,21 +61,43 @@ fi
 # --- 2. the log -------------------------------------------------------------
 echo
 echo "[2] job log"
-LOG=""
-for cand in jobs/pairing_${JOB}.out jobs/pairing_${JOB}.err; do
-    [[ -f "$cand" ]] && LOG="$cand" && break
+# Read BOTH streams. The .sbatch sends stdout and stderr to separate files, so
+# a python traceback lands in .err while .out just stops -- looking only at
+# .out reports "no errors found" on a job that died with a traceback.
+LOGS=()
+for cand in "jobs/pairing_${JOB}.out" "jobs/pairing_${JOB}.err"; do
+    [[ -f "$cand" ]] && LOGS+=("$cand")
 done
-[[ -z "$LOG" ]] && LOG=$(ls -t jobs/pairing_*.out 2>/dev/null | head -1)
-if [[ -n "$LOG" && -f "$LOG" ]]; then
-    echo "    $LOG  ($(wc -l < "$LOG") lines)"
-    echo "    --- last 25 lines ---"
-    tail -25 "$LOG" | sed 's/^/      /'
+if (( ${#LOGS[@]} == 0 )); then
+    while IFS= read -r f; do [[ -n "$f" ]] && LOGS+=("$f"); done < <(
+        ls -t jobs/pairing_*.out jobs/pairing_*.err 2>/dev/null | head -2)
+fi
+if (( ${#LOGS[@]} )); then
+    for LOG in "${LOGS[@]}"; do
+        echo "    $LOG  ($(wc -l < "$LOG") lines)"
+    done
+    STDERR_LOG=""
+    for LOG in "${LOGS[@]}"; do [[ "$LOG" == *.err ]] && STDERR_LOG="$LOG"; done
+    # Show the stderr tail FIRST when it has content -- that is where the cause is.
+    if [[ -n "$STDERR_LOG" && -s "$STDERR_LOG" ]]; then
+        echo
+        echo "    --- STDERR tail (the failure cause lives here) ---"
+        tail -30 "$STDERR_LOG" | sed 's/^/      /'
+    elif [[ -n "$STDERR_LOG" ]]; then
+        echo "    (stderr file is empty)"
+    else
+        echo "    NOTE: no .err file found. If the job failed with no error in"
+        echo "          .out, the traceback went to a stderr file that is"
+        echo "          missing -- check the --error path in pairing.sbatch."
+    fi
     echo
-    echo "    --- any error-shaped lines anywhere in the log ---"
-    grep -niE "error|traceback|killed|oom|no such file|refus|cannot|exceeded" "$LOG" \
-        | head -12 | sed 's/^/      /' || echo "      none"
-    # /usr/bin/time -v reports the real peak
-    grep -iE "maximum resident set size" "$LOG" \
+    echo "    --- stdout tail ---"
+    tail -20 "${LOGS[0]}" | sed 's/^/      /'
+    echo
+    echo "    --- error-shaped lines across BOTH streams ---"
+    grep -niE "error|traceback|killed|oom|no such file|refus|cannot|exceeded|attributeerror|keyerror|valueerror" \
+         "${LOGS[@]}" 2>/dev/null | head -15 | sed 's/^/      /' || echo "      none"
+    grep -hiE "maximum resident set size" "${LOGS[@]}" 2>/dev/null \
         | sed 's/^/      /' || true
 else
     echo "    no log found under jobs/. If the directory did not exist at submit"

@@ -238,9 +238,33 @@ def main():
     if Zr.shape[1] != Za.shape[1]:
         sys.exit(f"ERROR: latent dims differ ({Zr.shape[1]} vs {Za.shape[1]})")
 
+    # --use-raw is only meaningful when a .raw actually exists. Without this
+    # check `rna.raw.X` raises AttributeError on None, 20 lines from any
+    # message that would tell you why.
+    if args.use_raw:
+        if rna.raw is None:
+            sys.exit(
+                "ERROR: --use-raw was given but rna.h5ad has no .raw layer.\n"
+                f"  X is {rna.X.dtype} "
+                f"{'(integer -> already raw counts)' if 'int' in str(rna.X.dtype) else ''}\n"
+                f"  available layers: {list(rna.layers.keys()) or 'none'}\n"
+                "\n"
+                "  If X is already raw counts, just drop --use-raw. If the counts\n"
+                "  live in a layer, pass --rna-layer <name> instead.")
+    if args.rna_layer and args.rna_layer not in rna.layers:
+        sys.exit(f"ERROR: --rna-layer '{args.rna_layer}' not in rna.layers "
+                 f"(have: {list(rna.layers.keys()) or 'none'})")
+
     X_rna = (rna.raw.X if args.use_raw else
              rna.layers[args.rna_layer] if args.rna_layer else rna.X)
     rna_var = rna.raw.var.copy() if args.use_raw else rna.var.copy()
+
+    # State what is actually being aggregated -- this ends up in the h5mu
+    # provenance, and "were these counts or normalized values" is the first
+    # question anyone asks of a region-to-gene result.
+    _src = ("rna.raw.X" if args.use_raw
+            else f"rna.layers['{args.rna_layer}']" if args.rna_layer else "rna.X")
+    _log(f"RNA matrix: {_src}, dtype {X_rna.dtype}")
     X_atac = atac.X
     if not sparse.issparse(X_atac):
         _log("WARNING: ATAC X is dense; this script exists to avoid that")
