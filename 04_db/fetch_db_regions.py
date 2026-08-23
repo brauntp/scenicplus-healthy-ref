@@ -160,10 +160,25 @@ def main():
         sys.exit("ERROR: pandas is required to write the catalog.")
     df = pd.DataFrame(regions, columns=["chrom", "start", "end"])
     df["width"] = df.end - df.start
+    # Fall back to CSV rather than discarding the work. Parquet needs pyarrow or
+    # fastparquet, which the minimal pairing env deliberately does not carry --
+    # and by this point 121 MB has already been transferred and parsed. The audit
+    # reads .csv/.tsv/.bed as happily as .parquet, so the format is not
+    # load-bearing.
+    written = args.out
     if args.out.endswith(".parquet"):
-        df.to_parquet(args.out, index=False)
+        try:
+            df.to_parquet(args.out, index=False)
+        except ImportError as e:
+            written = args.out[: -len(".parquet")] + ".csv"
+            df.to_csv(written, index=False)
+            _log(f"parquet unavailable ({e.__class__.__name__}: no pyarrow/"
+                 f"fastparquet in this env) -- wrote CSV instead: {written}")
+            _log("the audit accepts .csv, .tsv and .bed as well as .parquet, so "
+                 "nothing is lost")
     else:
         df.to_csv(args.out, index=False)
+    args.out = written
     _log(f"wrote {args.out} ({os.path.getsize(args.out) / 1024**2:.1f} MB)")
     _log(f"region width: median {df.width.median():.0f} bp, "
          f"range {df.width.min()}-{df.width.max()}; "
