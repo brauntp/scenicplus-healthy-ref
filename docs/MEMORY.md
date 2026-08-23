@@ -1,3 +1,30 @@
+# Measured memory on this reference (2026-08-23)
+
+Predictions vs `sacct` MaxRSS, so future estimates can be calibrated:
+
+| job | requested | predicted peak | **actual MaxRSS** | verdict |
+|---|---|---|---|---|
+| pairing (`aggregate_atac_sparse.py`) | 80G | ~55 GB | **63.5 GB** (79%) | good estimate |
+| QC, first attempt | 32G | — | OOM-killed at 27.7 GB | too small |
+| QC (`qc_paired.sbatch`) | 96G | ~80.7 GB | **43.2 GB** (45%) | **1.87x over** |
+
+**The lesson from the QC job.** The 80.7 GB figure assumed
+`validate_h5mu.py` holds the object resident (40.4 GB) *and* materialises a full
+second copy during the NaN scan. Actual overhead above resident was 2.8 GB (7%),
+so the scan works in chunks. A "one full copy" assumption is the wrong default
+for a *scan*.
+
+It is not the wrong default for `.to_df()`, which genuinely does build a new
+DataFrame — so the SCENIC+ region-to-gene estimate below keeps the 2x
+assumption, but with this measurement as a reason to check MaxRSS on the first
+run rather than trusting the projection.
+
+The pairing job's 63.5 GB against a 55 GB prediction is the opposite error and
+the more dangerous one: 15% under. Its dense output arithmetic was exact
+(40.4 GB); the sparse-input estimate was low, as recorded in `GROUPS.md`.
+
+---
+
 # Memory planning: the imputed-accessibility step
 
 **This is the step most likely to kill a cluster job.** Read before submitting.

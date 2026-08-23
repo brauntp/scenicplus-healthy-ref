@@ -82,14 +82,68 @@ lineage-level assignment is sound; adjacent-stage boundaries within a lineage ar
 soft, which is expected from label transfer and matters when interpreting an
 eRegulon attributed to Early vs Late GMP.
 
+## Cross-modal gaps: an erythroid-specific finding
+
+From `pairing_diagnostics.csv`, worst 8 of 24 groups:
+
+| group | gap | RNA | ATAC | independent metacells |
+|---|---|---|---|---|
+| Early Erythroid | **0.3888** | 10,832 | 2,001 | 40 |
+| Late Erythroid | **0.3812** | 9,759 | 4,565 | 91 |
+| Late GMP | 0.1867 | 853 | 153 | 3 |
+| Early Lymphoid | 0.1357 | 21,656 | 4,353 | 87 |
+| Early GMP | 0.1217 | 29,846 | 4,376 | 87 |
+| Pre-B | 0.1120 | 29,660 | 9,523 | 190 |
+| Megakaryocyte Precursor | 0.1107 | 433 | 293 | 5 |
+| Stromal | 0.1073 | 490 | 6,215 | 9 |
+
+**This is not a sampling artifact.** Gap vs independent metacells: rho = +0.13
+(none). Gap vs RNA/ATAC imbalance: rho = +0.55, but the two worst groups are
+well supported (40 and 91 independent metacells) and Stromal — the most
+imbalanced group in the reference at 0.08 RNA/ATAC — sits 8th.
+
+The two erythroid groups are 1st and 2nd of 24 at ~3.5x the typical group.
+
+**Scale.** Gaps are distances between L2-normalised 50-dim GLUE vectors, where
+unrelated cells sit ~1.41 apart. So 0.39 is 27% of the random-pair distance:
+RNA and ATAC erythroid cells are still in broadly the same region, but far more
+separated than any other lineage.
+
+**A plausible mechanism, not a verified one.** Late erythroid maturation
+involves global chromatin condensation and transcriptional shutdown before
+enucleation, so the RNA and ATAC manifolds may genuinely diverge along that
+trajectory — and GLUE aligns modalities through a peak-to-gene prior, which has
+less to anchor on when accessibility and transcription decouple. This is
+consistent with the observation but not established by it; ruling in requires
+looking at the GLUE embedding itself, not the diagnostics.
+
+**Convergent evidence is absent, and that is worth stating.** Erythroid/Mk
+markers do miss more often in section 2 (4/14 = 29% vs 11/60 = 18% elsewhere),
+but Fisher exact gives OR 1.78, p = 0.30 — not significant at n=14. The gap
+finding rests on the diagnostics alone.
+
+**Note on the prediction.** Before seeing this, the expectation was that Stromal,
+Pro-Monocyte and cDC would be worst, reasoning from modality imbalance and low
+cell counts. That was wrong: Stromal is 8th and Pro-Monocyte is not in the top 8.
+Cross-modal gap and cell abundance turned out to be nearly uncorrelated, so the
+two must be read as independent axes of caution — a group can be abundant and
+badly aligned (Early Erythroid), or thin and well aligned (Pro-Monocyte).
+
 ## What to distrust downstream
 
-1. **Late GMP (3 independent metacells), Pro-Monocyte (1), Stromal (9),
-   Plasma Cell (10), EoBasoMast (11).** Any eRegulon resting on these is
-   supported by a handful of independent observations no matter how many
+1. **Thin support** — Late GMP (3 independent metacells), Pro-Monocyte (1),
+   Stromal (9), Plasma Cell (10), EoBasoMast (11). Any eRegulon resting on these
+   is supported by a handful of independent observations no matter how many
    metacells were emitted.
-2. **Distal links** more than proximal ones -- the locus-specific increment over
+2. **Poor cross-modal alignment — a SEPARATE axis.** Early Erythroid (gap 0.389)
+   and Late Erythroid (0.381) are abundant and well sampled but the worst-aligned
+   groups in the reference. Their metacells pair RNA and ATAC cells that sit
+   further apart in the GLUE space than any other lineage, so erythroid
+   region-to-gene links carry more pairing error than their metacell counts
+   suggest. Late GMP is bad on both axes and should be treated as the least
+   reliable group overall.
+3. **Distal links** more than proximal ones -- the locus-specific increment over
    the lineage baseline is small.
-3. **p-values from region-to-gene** as calibrated significance. Oversampling at
+4. **p-values from region-to-gene** as calibrated significance. Oversampling at
    8x improves ranking and inflates naive significance
    (`docs/oversample_null.csv`). Use them to rank.
