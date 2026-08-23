@@ -152,7 +152,7 @@ def _mwu_from_ranks(Rk, mask, tie, norm):
     return norm.sf((U - mu - 0.5) / sd)
 
 
-def main():
+def _build_parser():
     ap = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -175,10 +175,11 @@ def main():
                     help="skip groups with fewer INDEPENDENT observations than "
                          "this (default 5). Raw metacell count overstates "
                          "support by the oversample factor -- at oversample=8, "
-                         "Pro-Monocyte's 22 metacells are ~3 independent "
-                         "observations. The divisor is read from "
-                         "uns['glue_pairing']['oversample']; pass "
-                         "--assume-oversample if the object predates that.")
+                         "Pro-Monocyte's 22 metacells are floor(22/8)=2 "
+                         "independent observations by the fallback rule, and 1 "
+                         "by the diagnostics. Prefer --diagnostics; the "
+                         "fallback divisor comes from "
+                         "uns['glue_pairing']['oversample'].")
     ap.add_argument("--diagnostics", type=Path, default=None,
                     help="pairing_diagnostics.csv from the pairing job. Its "
                          "independent_metacell_equiv column is the AUTHORITATIVE "
@@ -194,6 +195,45 @@ def main():
                     help="regions per streaming block (default 20000)")
     ap.add_argument("--dry-run", action="store_true",
                     help="report groups, counts and footprint; write nothing")
+    ap.add_argument("--self-test", action="store_true",
+                    help="verify the help text's worked example against the "
+                         "code's own arithmetic, then exit")
+    return ap
+
+def _self_test():
+    """Check the --min-independent help text against what the code actually does.
+
+    This exists because that help string said "~3 independent" while the same
+    script printed "~2 independent" for the same input: an example in prose
+    drifted from the arithmetic beside it, and reading the text could not catch
+    it. So compute the example rather than trusting it.
+    """
+    import re
+    ap = _build_parser()
+    txt = " ".join(a.help or "" for a in ap._actions)
+    txt = re.sub(r"\s+", " ", txt)
+    m = re.search(r"(\d+) metacells are floor\((\d+)/(\d+)\)=(\d+)", txt)
+    if not m:
+        print("SELF-TEST FAIL: no worked example found in --min-independent help")
+        return 1
+    mc, num, div, stated = (int(g) for g in m.groups())
+    if num != mc:
+        print(f"SELF-TEST FAIL: example says {mc} metacells but divides {num}")
+        return 1
+    computed = int(max(1, np.floor(mc / div)))
+    if computed != stated:
+        print(f"SELF-TEST FAIL: help says floor({mc}/{div})={stated}, "
+              f"the fallback rule gives {computed}")
+        return 1
+    print(f"SELF-TEST PASS: help example floor({mc}/{div})={stated} matches the "
+          f"fallback rule")
+    return 0
+
+
+def main():
+    ap = _build_parser()
+    if "--self-test" in sys.argv:
+        sys.exit(_self_test())
     args = ap.parse_args()
 
     if not args.h5mu.exists():

@@ -96,7 +96,18 @@ echo "group key   : ${GROUP_KEY}"
 echo "out dir     : ${OUTDIR}"
 echo
 
-echo "=== [1/2] region sets from metacell DARs ==="
+echo "=== [1/3] self-test (seconds) ==="
+python 01_cistopic/region_sets_from_metacells.py --self-test
+ST_RC=$?
+if [[ "${ST_RC}" -ne 0 ]]; then
+    echo "ERROR: the script's own worked example disagrees with its arithmetic." >&2
+    echo "       Refusing to run: a drifted example means the documented filter" >&2
+    echo "       behaviour is not the implemented one." >&2
+    exit 1
+fi
+
+echo
+echo "=== [2/3] region sets from metacell DARs ==="
 python 01_cistopic/region_sets_from_metacells.py \
     --h5mu "${PAIRED}" \
     --group-key "${GROUP_KEY}" \
@@ -110,7 +121,7 @@ RS_RC=$?
 echo "generator exit: ${RS_RC}"
 
 echo
-echo "=== [2/2] does the config validate now? ==="
+echo "=== [3/3] does the config validate now? ==="
 bash 03_pipeline/make_config.sh --check-only
 CFG_RC=$?
 echo "config check exit: ${CFG_RC}"
