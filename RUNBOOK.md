@@ -117,7 +117,7 @@ sbatch slurm/pairing.sbatch
 |---|---|---|
 | partition | `batch` | `cluster.yaml` `__default__`, and both `run_pipeline_*.sh` wrappers |
 | account | *not set* | no lab script specifies one; the default `maxsonlab` applies |
-| logs | `jobs/<name>_%j.{out,err}` | `cluster.yaml` error/out keys |
+| logs | `jobs/<name>_%j.{out,err}` | `run_pipeline_conda.sh` (`--output=jobs/run_pipeline_%j.log`); `cluster.yaml` uses the nested `jobs/{rule}/{rule}_%j.*` for per-rule jobs |
 | conda | activate before `sbatch` | `run_pipeline_conda.sh` header comments |
 
 `slurm/pairing.sbatch` hardcodes `--partition=batch` accordingly, so no flags

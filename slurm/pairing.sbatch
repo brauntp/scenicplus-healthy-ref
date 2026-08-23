@@ -45,7 +45,9 @@
 
 # jobs/ rather than slurm/logs/, matching cutTag-pipeline. SLURM will NOT
 # create the directory and silently discards output if it is missing, so
-# `mkdir -p jobs` before the first submit (the lab README says the same).
+# `mkdir -p jobs` before the first submit. (The lab README instructs creating
+# jobs/ if absent; the silent-discard consequence is SLURM's own behaviour, not
+# something the README states.)
 #SBATCH --output=jobs/pairing_%j.out
 #SBATCH --error=jobs/pairing_%j.err
 # #SBATCH --mail-type=END,FAIL

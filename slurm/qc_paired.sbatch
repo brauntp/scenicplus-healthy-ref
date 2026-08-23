@@ -20,8 +20,13 @@
 #SBATCH --cpus-per-task=2
 # 96G, not 32G. The backed/subsetting path in qc_paired.py peaks near 6 GB, but
 # validate_h5mu.py at the end calls mudata.read() unbacked and then scans every
-# matrix: 40.4 GB resident, and pandas/numpy copies during the scan push the
-# peak to ~81 GB. Sizing this to the cheap step would OOM on the expensive one.
+# matrix. Derivation on this reference (25,323 metacells):
+#     RNA   25,323 x  34,112 x 4 B =  3.2 GB
+#     ATAC  25,323 x 393,832 x 4 B = 37.2 GB
+#     resident after read          = 40.4 GB
+#     + one transient copy in scan = 80.7 GB   <- the peak
+#     x1.15 allocator headroom     = 92.9 GB   <- hence 96G
+# Sizing this to the cheap step would OOM on the expensive one.
 #SBATCH --mem=96G
 #SBATCH --time=01:00:00
 #SBATCH --output=jobs/qc_paired_%j.out

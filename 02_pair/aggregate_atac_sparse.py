@@ -131,7 +131,10 @@ def main():
                     help="Metacells per group = (cells/k) * OVERSAMPLE. Values >1 "
                          "mean metacells share cells. This improves link RANKING "
                          "(more, better-conditioned observations for the GBM) but "
-                         "does NOT add independent information -- see --help-stats. "
+                         "does NOT add independent information: the diagnostics "
+                         "record independent_metacell_equiv, which is the honest "
+                         "denominator for judging how well a link is supported. "
+                         "See docs/benchmark_oversample.py. "
                          "4-8 is a reasonable range when compute is cheap; the "
                          "returns are largest for small populations. (default: 2)")
     ap.add_argument("--min-metacells-per-group", type=int, default=0,
@@ -425,14 +428,17 @@ def main():
                    "covariation, not single-nucleus co-occurrence."),
         "oversampling_caveat": (
             "With oversample > 1 metacells SHARE cells and are not independent "
-            "observations. Simulation: oversampling improves true-vs-decoy link "
-            "RANKING (AUROC 0.79 -> 0.98 at high integration noise, k=50) while "
-            "median rho on true links stays flat -- but under a pure null the "
-            "naive p<0.05 rate rises from 0.125 to 0.175 and p<0.001 from 0.000 "
-            "to 0.050 as oversample goes 1 -> 16. Treat SCENIC+ region-to-gene "
-            "p-values as ranking scores, not calibrated significance, and judge "
-            "support using independent_metacell_equiv in the diagnostics rather "
-            "than n_metacells.")}
+            "observations. Measured in docs/benchmark_oversample.py "
+            "(docs/oversample_sweep.csv, docs/oversample_null.csv): oversampling "
+            "improves true-vs-decoy link RANKING -- at k=50 and noise 2.5, AUROC "
+            "0.6698 -> 0.9002 as oversample goes 1 -> 16 -- while median rho on "
+            "true links stays flat (0.0471 -> 0.0472), so effect sizes are not "
+            "inflated. But under a pure null the naive p<0.05 rate rises from "
+            "0.056 to 0.338 and p<0.001 from 0.000 to 0.100 over the same range. "
+            "Treat SCENIC+ region-to-gene p-values as ranking scores, not "
+            "calibrated significance, and judge support using "
+            "independent_metacell_equiv in the diagnostics rather than "
+            "n_metacells.")}
     args.out.parent.mkdir(parents=True, exist_ok=True)
     md.write_h5mu(str(args.out))
     _log(f"wrote {args.out}: {M_rna.shape[0]} metacells, "
