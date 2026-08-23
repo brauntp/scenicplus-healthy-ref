@@ -146,8 +146,9 @@ Java heap controllable only through `MALLET_MEMORY`.
 
 The config's own comments name `DARs_cell_type` as a valid region-set family
 alongside `topics_otsu`. Per-cell-type DARs are computable directly from
-`ACC_GEX.h5mu` — 25,323 metacells already grouped — streaming in blocks, ~2 GB
-resident, one batch job:
+`ACC_GEX.h5mu` — 25,323 metacells already grouped — streaming in blocks, one
+batch job at 32G (the first attempt at 16G was OOM-killed; see
+`docs/MEMORY.md`):
 
 ```bash
 sbatch slurm/region_sets.sbatch
@@ -194,16 +195,34 @@ diagnostics file is supplied. Without it the script falls back to
 labels itself APPROXIMATE in the output. It refuses outright if the diagnostics
 file does not name every group in the object.
 
-All three skipped groups are ones `docs/QC_RESULT.md` had already flagged as
-too thinly supported to trust an eRegulon from.
+Two of the three — Pro-Monocyte (1) and Late GMP (3) — are named in
+`docs/QC_RESULT.md`'s thin-support list. cDC (2) is not: that list stops at the
+five groups the QC report happened to enumerate, and cDC sits between them by
+independent count. Its exclusion here follows the same rule, not a prior
+finding.
 
-**Runtime, measured:** 4.37 s per 2,000-region block → ~14 min for 393,832
-regions, against a 2 h walltime. The first version called
-`scipy.mannwhitneyu` once per group, which re-ranks the same block 24 times:
-1.84 ms per region per group, i.e. **4.8 h against the 4 h walltime I had
-originally set** — killed with nothing written, since BEDs land only at the end.
-Ranking once per block and deriving each group's U from its rank sum is 20×
-faster and matches scipy to 5e-08, tie and continuity corrections included.
+**Runtime and memory, both measured — and both wrong on the first attempt.**
+Current figures: 2.14 ms per region for ranks, ties and all 24 groups → ~14 min
+for 393,832 regions against a 2 h walltime, peaking at 2.45 GB per 4,000-region
+block against 32G.
+
+Two prior versions were killed, for reasons worth keeping:
+
+1. **Walltime.** The first called `scipy.mannwhitneyu` once per group, which
+   re-ranks the same block 24 times: 1.84 ms per region *per group*, i.e. 4.8 h
+   against the 4 h I had set. Ranking once per block and deriving each group's U
+   from its rank sum is 20× faster.
+2. **Memory (job 10714844, exit 137).** I sized `--mem` from the block's own
+   size (1.89 GB at 20,000 regions) and called it "flat", ignoring what gets
+   computed *from* the block. Measured 9.59 GB: `rankdata` returns float64 — 2×
+   a float32 block — argsorts int64 internally, and the tie terms sorted a
+   second copy. Ranks and ties now come from one stable argsort in the block's
+   dtype: 2.45 GB at a 4,000-region default.
+
+Both rewrites keep the statistics exact — ranks identical to `rankdata` (max
+|diff| 0.0, ties included) and p-values matching scipy to 5e-08, tie and
+continuity corrections in place. Recall on the planted fixture stays 1.000 with
+a 0.13% false-positive rate against a 5% FDR target.
 
 ## Which env does each step need?
 

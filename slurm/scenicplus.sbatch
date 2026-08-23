@@ -134,20 +134,36 @@ echo "==============================================================="
 # PATH. The env therefore MUST be active in this shell before snakemake starts.
 # `conda activate` needs the hook; `conda run` does not work here because we
 # need the env live for the child shells snakemake spawns.
-# Read from setenv.sh (sourced above) so this file needs no editing, matching
-# pairing.sbatch and qc_paired.sbatch -- the two scripts that have actually run
-# on this cluster. Override by exporting either variable before sbatch.
-CONDA_BASE="${SCPLUS_CONDA_BASE:-/home/groups/MaxsonLab/braun/miniconda3}"
-CONDA_ENV="${SCPLUS_ENV:-scenicplus}"    # see 03_pipeline/environment.yml
+# House style in cutTag-pipeline is to `conda activate` BEFORE sbatch and let
+# the job inherit it (sbatch exports the environment by default). pairing.sbatch
+# and qc_paired.sbatch -- the two scripts that have actually run on this cluster
+# -- honour that first and fall back to activating here. This does the same, so
+# the three behave identically.
+#
+# NOTE: setenv.sh does NOT define these. An earlier comment here claimed they
+# were "read from setenv.sh (sourced above)"; they are not, and the fallback
+# below is a hardcoded default, not a project setting. Override by exporting
+# CONDA_ENV or CONDA_BASE before sbatch.
+CONDA_ENV="${CONDA_ENV:-scenicplus}"     # see 03_pipeline/environment.yml
 
-if [[ ! -f "${CONDA_BASE}/etc/profile.d/conda.sh" ]]; then
-    echo "ERROR: no conda hook at ${CONDA_BASE}/etc/profile.d/conda.sh" >&2
-    echo "       Set CONDA_BASE to the output of \`conda info --base\`." >&2
-    exit 1
+if [[ "${CONDA_DEFAULT_ENV:-}" == "$CONDA_ENV" ]]; then
+    echo "using inherited conda env: $CONDA_DEFAULT_ENV"
+else
+    CONDA_BASE="${CONDA_BASE:-/home/groups/MaxsonLab/braun/miniconda3}"
+    if [[ -f "${CONDA_BASE}/etc/profile.d/conda.sh" ]]; then
+        # shellcheck disable=SC1091
+        source "${CONDA_BASE}/etc/profile.d/conda.sh"
+        conda activate "${CONDA_ENV}" || {
+            echo "ERROR: cannot activate env '${CONDA_ENV}'" >&2; exit 1; }
+        echo "activated conda env: ${CONDA_ENV} (from ${CONDA_BASE})"
+    else
+        echo "ERROR: '${CONDA_ENV}' is not active and no conda.sh under" >&2
+        echo "       CONDA_BASE=${CONDA_BASE}." >&2
+        echo "       Either 'conda activate ${CONDA_ENV}' before sbatch (house" >&2
+        echo "       style), or set CONDA_BASE when submitting." >&2
+        exit 1
+    fi
 fi
-# shellcheck disable=SC1091
-source "${CONDA_BASE}/etc/profile.d/conda.sh"
-conda activate "${CONDA_ENV}" || { echo "ERROR: cannot activate env '${CONDA_ENV}'" >&2; exit 1; }
 echo "env            : $(which python)"
 command -v scenicplus >/dev/null || { echo "ERROR: 'scenicplus' not on PATH after activating ${CONDA_ENV}" >&2; exit 1; }
 

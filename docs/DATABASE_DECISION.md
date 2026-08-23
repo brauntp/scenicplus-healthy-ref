@@ -207,7 +207,7 @@ of the loss, **2.64% of all peaks**. Even if every one were a genuine restricted
 enhancer, that is the worst-case cost of the precomputed database, against an
 18.80% headline dominated by weak peaks.
 
-![Prevalence confound](art_6863e883-e25f-40c4-8b88-6ab313922bb7)
+![Prevalence confound and its removal]({{artifact:art_6863e883-e25f-40c4-8b88-6ab313922bb7}})
 
 ### What to report in methods
 

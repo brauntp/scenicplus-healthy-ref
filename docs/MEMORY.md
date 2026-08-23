@@ -52,6 +52,29 @@ Predictions vs `sacct` MaxRSS, so future estimates can be calibrated:
 | pairing (`aggregate_atac_sparse.py`) | 80G | ~55 GB | **63.5 GB** (79%) | good estimate |
 | QC, first attempt | 32G | — | OOM-killed at 27.7 GB | too small |
 | QC (`qc_paired.sbatch`) | 96G | ~80.7 GB | **43.2 GB** (45%) | **1.87x over** |
+| region sets, first attempt | 16G | "flat ~2 GB" | **OOM-killed (exit 137)** | **~5x under** |
+| region sets (`region_sets.sbatch`) | 32G | 2.45 GB measured | *pending* | — |
+
+**The lesson from the region-set OOM.** I sized `--mem` from the streaming
+block's own size (1.89 GB at 20,000 regions × 25,323 metacells) and called the
+footprint "flat", ignoring everything computed *from* the block. Measured, that
+block peaked at **9.59 GB**: `scipy.stats.rankdata` returns float64 (2× a
+float32 block) and argsorts int64 internally, and the tie-term computation
+sorted a second full copy.
+
+Fixed by computing ranks and tie terms from one stable argsort, keeping ranks in
+the block's dtype — 2.45 GB for a 4,000-region block, with ranks identical to
+`rankdata` (max |diff| 0.0, ties included) and p-values matching scipy to
+5e-08. The peak/block ratio is 5.1× at 20,000 regions and 6.5× at 4,000; it
+falls with block size because the per-column loop's temporaries don't scale with
+it.
+
+All three resolved predictions in this table were wrong, in both directions
+(15% under, 1.87x over, ~5x under). The
+pattern is not arithmetic error — it is asserting an access pattern instead of
+measuring one. `03_pipeline/probe_region_to_gene_memory.py` exists for exactly
+this reason, and the same discipline should apply before every remaining
+`--mem`.
 
 **The lesson from the QC job.** The 80.7 GB figure assumed
 `validate_h5mu.py` holds the object resident (40.4 GB) *and* materialises a full

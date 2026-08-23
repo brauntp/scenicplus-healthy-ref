@@ -9,14 +9,24 @@
 #
 #   sbatch slurm/region_sets.sbatch
 #
-# Memory is flat: the ATAC matrix is streamed in blocks of --block regions from
-# a backed object, so peak RSS is set by the block (1.9 GB at 20,000 regions x
-# 25,323 metacells), not by the 37 GB matrix. 16G is generous.
+# Memory is set by --block, but the peak is 5-6.5x the block's own size, not 1x.
+# Job 10714844 was OOM-KILLED (exit 137) at 16G because I sized this from the
+# block alone: a 20,000-region block is 1.89 GB, but ranks + a stable argsort +
+# the gathered sorted copy took it to 9.59 GB MEASURED, and scipy's rankdata
+# returned float64 (2x a float32 block) with an int64 argsort inside.
 #
-# Time is MEASURED, not guessed: 4.37 s per 2,000-region block (rankdata 3.40,
-# tie terms 0.92, all 24 groups 0.06) -> ~14 min for 393,832 regions. 2h is a
-# 8x margin, which matters because BEDs are written only at the end, so a
-# walltime kill loses everything.
+# Fixed on two fronts: ranks and tie terms now come from ONE argsort and stay in
+# the block's dtype, and --block defaults to 4,000 (0.38 GB block, 2.45 GB peak
+# measured, a 6.5x factor; the 20,000 block measured 5.1x -- the ratio falls
+# with block size because the per-column python loop's temporaries do not scale).
+# 32G gives ~13x headroom over 2.45 GB, deliberately generous: this is the second
+# sizing attempt and the first was killed.
+#
+# Time is MEASURED: 2.14 ms per region for ranks+ties+all 24 groups at
+# 25,323 metacells -> ~14 min for 393,832 regions, unchanged by the memory fix
+# (the combined routine is ~30% slower per block than rankdata alone, but it
+# replaces rankdata AND a second np.sort). 2h is an ~8x margin, which matters
+# because BEDs are written only at the end, so a walltime kill loses everything.
 #
 # The first version of this script called scipy.mannwhitneyu once per group,
 # which re-ranks the same block 24 times: 1.84 ms per region per group, i.e.
@@ -29,7 +39,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
-#SBATCH --mem=16G
+#SBATCH --mem=32G
 #SBATCH --time=02:00:00
 #SBATCH --output=jobs/%x-%j.out
 #SBATCH --error=jobs/%x-%j.err

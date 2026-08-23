@@ -115,22 +115,47 @@ def bh(p):
     return np.clip(q, 0, 1)
 
 
-def _tie_terms(X):
-    """sum(t**3 - t) over tie groups, per column.
+def _ranks_and_ties(X):
+    """Average ranks (SAME dtype as X) and sum(t**3 - t) per column, from ONE
+    argsort.
 
-    Needed for the Mann-Whitney variance: without it, tied values inflate p.
-    Metacell accessibility is tie-heavy (many exact zeros), so this is not a
-    negligible correction -- omitting it disagreed with scipy by up to 7e-03.
+    Why not scipy.stats.rankdata + a separate np.sort:
+
+      * rankdata returns float64 -- 2x a float32 input -- and argsorts int64
+        internally. On a 20,000-region block of 25,323 metacells (1.89 GB) that
+        peaked at 9.59 GB measured, and the job was OOM-killed at 16G (exit 137)
+        against my "flat ~2 GB" projection.
+      * computing tie terms from a second np.sort materialised another full copy
+        of the block.
+
+    Doing both from one stable argsort, keeping ranks in the input dtype, peaks
+    at 2.45 GB for a 4,000-region block and gives ranks IDENTICAL to
+    rankdata (max |diff| 0.0, ties included).
     """
-    Xs = np.sort(X, axis=0)
-    out = np.zeros(X.shape[1], dtype=np.float64)
     n = X.shape[0]
+    order = np.argsort(X, axis=0, kind="stable")
+    Xs = np.take_along_axis(X, order, axis=0)
+    neq = np.empty(Xs.shape, dtype=bool)
+    neq[0] = True
+    np.not_equal(Xs[1:], Xs[:-1], out=neq[1:])
+    del Xs
+    grp = np.cumsum(neq, axis=0, dtype=np.int32)
+    del neq
+    G = grp.max(0)
+    ranks_sorted = np.empty_like(X)
+    tie = np.zeros(X.shape[1], dtype=np.float64)
     for j in range(X.shape[1]):
-        col = Xs[:, j]
-        idx = np.flatnonzero(np.diff(col)) + 1
-        sizes = np.diff(np.concatenate(([0], idx, [n])))
-        out[j] = float(((sizes.astype(np.float64) ** 3) - sizes).sum())
-    return out
+        cnt = np.bincount(grp[:, j], minlength=int(G[j]) + 1)[1:]
+        ends = np.cumsum(cnt)
+        starts = ends - cnt
+        ranks_sorted[:, j] = np.repeat(
+            ((starts + ends + 1) / 2.0).astype(X.dtype), cnt)
+        c = cnt.astype(np.float64)
+        tie[j] = float(((c ** 3) - c).sum())
+    del grp
+    R = np.empty_like(X)
+    np.put_along_axis(R, order, ranks_sorted, axis=0)
+    return R, tie
 
 
 def _mwu_from_ranks(Rk, mask, tie, norm):
@@ -145,7 +170,9 @@ def _mwu_from_ranks(Rk, mask, tie, norm):
     n1 = int(mask.sum())
     n2 = Rk.shape[0] - n1
     N = n1 + n2
-    U = Rk[mask].sum(0) - n1 * (n1 + 1) / 2.0
+    # float64 accumulator: ranks are stored in the block's dtype (float32) to
+    # halve memory, and summing ~3k float32 ranks near 2.5e4 loses precision.
+    U = Rk[mask].sum(0, dtype=np.float64) - n1 * (n1 + 1) / 2.0
     mu = n1 * n2 / 2.0
     var = n1 * n2 / 12.0 * ((N + 1) - tie / (N * (N - 1)))
     sd = np.sqrt(np.maximum(var, 1e-12))
@@ -191,8 +218,12 @@ def _build_parser():
                     help="fallback when no --diagnostics is given and the object "
                          "records no oversample factor (1.0 = treat metacells "
                          "as independent)")
-    ap.add_argument("--block", type=int, default=20_000,
-                    help="regions per streaming block (default 20000)")
+    ap.add_argument("--block", type=int, default=4_000,
+                    help="regions per streaming block (default 4000). Peak RSS "
+                         "is 5-6.5x the block's float32 size: the block, its "
+                         "ranks, a stable argsort (int64) and the gathered "
+                         "sorted copy. 4,000 x 25,323 measured 2.45 GB; 20,000 "
+                         "measured 9.59 GB and was OOM-killed at 16G.")
     ap.add_argument("--dry-run", action="store_true",
                     help="report groups, counts and footprint; write nothing")
     ap.add_argument("--self-test", action="store_true",
@@ -241,7 +272,7 @@ def main():
 
     try:
         import mudata
-        from scipy.stats import rankdata, norm
+        from scipy.stats import norm
     except ImportError as e:
         sys.exit(f"ERROR: needs mudata and scipy ({e})\n"
                  "       conda activate scplus-pairing")
@@ -334,8 +365,9 @@ def main():
     for g, c, i in skipped:
         print(f"    skip {g!r}: {c} metacells = ~{i} independent")
     blk_gb = args.block * n_mc * 4 / 1024**3
-    print(f"  streaming block : {args.block:,} regions -> {blk_gb:.2f} GB "
-          f"resident (full matrix would be "
+    print(f"  streaming block : {args.block:,} regions = {blk_gb:.2f} GB, "
+          f"peak ~{blk_gb * 6.5:.1f} GB "
+          f"(measured factor; full matrix is "
           f"{n_reg * n_mc * 4 / 1024**3:.1f} GB)")
 
     if args.dry_run:
@@ -359,8 +391,7 @@ def main():
         i1 = min(i0 + args.block, n_reg)
         blk = A[:, i0:i1].to_memory().X
         blk = np.asarray(blk.todense()) if hasattr(blk, "todense") else np.asarray(blk)
-        Rk = rankdata(blk, axis=0)
-        tie = _tie_terms(blk)
+        Rk, tie = _ranks_and_ties(blk)
         for g, m in masks.items():
             a_mean = blk[m].mean(0)
             b_mean = blk[~m].mean(0)
