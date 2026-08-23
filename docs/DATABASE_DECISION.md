@@ -166,6 +166,68 @@ expect the matched effect to be near zero or negative — "precomputed is
 adequate". That is inference from summary statistics; the matched test on the
 per-peak data decides.
 
+## DECISION: use the precomputed SCREEN database
+
+The prediction held. On the real per-peak data:
+
+| test | effect | reading |
+|---|---|---|
+| naive, unstratified | **+0.195** | confounded by prevalence (−0.488) |
+| prevalence-stratified, pooled | **−0.032** | sign reverses |
+| **prevalence-matched (primary)** | **−0.0195** (p = 7e-07, 43,332 pairs) | **no informative tail** |
+
+Matched prevalence ratio 1.0000, so the confound is removed by construction.
+Median specificity 4.645 retained vs 4.572 dropped — a 1.6% difference in the
+*opposite* direction to the naive result. With 43,332 pairs, p = 7e-07 measures
+precision, not magnitude: it corresponds to a 49.0% chance that a random dropped
+peak is more specific than a random retained one, against 50% for no difference.
+
+**At matched prevalence the dropped peaks are, if anything, marginally *less*
+cell-type-specific. The 18.80% loss is weak peaks, not restricted enhancers.**
+
+### The stratum interaction, and why it does not overturn this
+
+Per-stratum effects flip sign monotonically with prevalence (rho = +0.96 against
+stratum index): negative in strata 0–5, positive in 6–9. Two facts settle which
+side to believe.
+
+*Direction of the residual bias.* Within any bin, dropped peaks sit at the low-
+prevalence end and retained at the high end, and lower prevalence inflates
+apparent specificity. So residual confounding pushes every stratum's effect
+**positive**. The negative strata are negative *despite* that bias —
+conservative. The positive strata point the same way as the bias and cannot be
+separated from it.
+
+*Where the bins are wide.* Strata 8 and 9 span 2.3× and 17.8× in prevalence,
+versus ~1.3× for strata 1–5. The positive effects appear exactly where
+stratification controls the confound least.
+
+*Size of the unresolved residue.* Strata 6–9 hold 10,405 dropped peaks — 14.1%
+of the loss, **2.64% of all peaks**. Even if every one were a genuine restricted
+enhancer, that is the worst-case cost of the precomputed database, against an
+18.80% headline dominated by weak peaks.
+
+![Prevalence confound](art_6863e883-e25f-40c4-8b88-6ab313922bb7)
+
+### What to report in methods
+
+> Motif enrichment used the precomputed hg38 SCREEN cCRE cisTarget database
+> (1,837,304 regions). Of 393,832 consensus peaks, 319,802 (81.2%) were
+> representable at `fraction_overlap > 0.4`; 74,030 (18.8%) were not, 82% of
+> those having no overlap with any annotated cCRE. Dropped peaks were sparser
+> than retained peaks (rank-biserial −0.49 on the fraction of cells accessible)
+> and, at matched prevalence, marginally less cell-type-specific (−0.02),
+> indicating the loss comprises weakly accessible rather than cell-type-
+> restricted elements.
+
+### When to revisit
+
+Build the custom database if the analysis comes to depend on cell types with few
+independent metacells — Pro-Monocyte (1), Late GMP (3), Stromal (9) — since the
+2.64% unresolved residue is concentrated in higher-prevalence peaks and a
+thinly-supported group has little else to rely on. For the reference as a whole,
+the precomputed database costs one download and no compute.
+
 ## Cost of each branch, for when the verdict lands
 
 **Precomputed SCREEN.** One 32.8 GiB download, no compute. Loses 18.8% of peaks
