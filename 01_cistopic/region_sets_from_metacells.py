@@ -50,9 +50,12 @@ accessibility matrix:
     `--fdr`, capped at `--max-regions` by effect size
 
 Mann-Whitney rather than a t-test because metacell accessibility is bounded
-and right-skewed, not normal. Ranks are computed once per region across all
-metacells and reused for every group, so the cost is one sort per region
-rather than one per group per region.
+and right-skewed, not normal. Ranks are computed ONCE per block and every
+group's U is derived from its rank sum -- scipy's mannwhitneyu re-ranks on each
+call, which at 24 groups meant ranking the same data 24 times (4.8 h projected,
+against a 4 h walltime). The closed form includes the tie and continuity
+corrections and agrees with scipy to 5e-08; accessibility is tie-heavy, and
+without the tie correction the disagreement reaches 7e-03.
 
 Streaming: the matrix is read in blocks of `--block` regions from a backed
 object, so peak RSS is set by the block, not by the object. At 393,832 peaks
@@ -112,6 +115,43 @@ def bh(p):
     return np.clip(q, 0, 1)
 
 
+def _tie_terms(X):
+    """sum(t**3 - t) over tie groups, per column.
+
+    Needed for the Mann-Whitney variance: without it, tied values inflate p.
+    Metacell accessibility is tie-heavy (many exact zeros), so this is not a
+    negligible correction -- omitting it disagreed with scipy by up to 7e-03.
+    """
+    Xs = np.sort(X, axis=0)
+    out = np.zeros(X.shape[1], dtype=np.float64)
+    n = X.shape[0]
+    for j in range(X.shape[1]):
+        col = Xs[:, j]
+        idx = np.flatnonzero(np.diff(col)) + 1
+        sizes = np.diff(np.concatenate(([0], idx, [n])))
+        out[j] = float(((sizes.astype(np.float64) ** 3) - sizes).sum())
+    return out
+
+
+def _mwu_from_ranks(Rk, mask, tie, norm):
+    """One-sided (greater) Mann-Whitney p from precomputed per-column ranks.
+
+    Equivalent to scipy.stats.mannwhitneyu(a, b, axis=0,
+    alternative="greater") with the normal approximation, tie correction and
+    continuity correction -- verified to 5e-08 both with and without ties.
+    Derived from ranks so the expensive sort happens once per block instead of
+    once per group.
+    """
+    n1 = int(mask.sum())
+    n2 = Rk.shape[0] - n1
+    N = n1 + n2
+    U = Rk[mask].sum(0) - n1 * (n1 + 1) / 2.0
+    mu = n1 * n2 / 2.0
+    var = n1 * n2 / 12.0 * ((N + 1) - tie / (N * (N - 1)))
+    sd = np.sqrt(np.maximum(var, 1e-12))
+    return norm.sf((U - mu - 0.5) / sd)
+
+
 def main():
     ap = argparse.ArgumentParser(
         description=__doc__,
@@ -131,11 +171,25 @@ def main():
     ap.add_argument("--max-regions", type=int, default=20_000,
                     help="cap per group, taken by effect size (default 20000). "
                          "Runtime of cisTarget scales with this.")
-    ap.add_argument("--min-metacells", type=int, default=5,
-                    help="skip groups with fewer metacells than this: a "
-                         "one-vs-rest test on 1-2 observations is noise, and "
-                         "the resulting BED would be junk fed to a 33 GiB "
-                         "database (default 5)")
+    ap.add_argument("--min-independent", type=int, default=5,
+                    help="skip groups with fewer INDEPENDENT observations than "
+                         "this (default 5). Raw metacell count overstates "
+                         "support by the oversample factor -- at oversample=8, "
+                         "Pro-Monocyte's 22 metacells are ~3 independent "
+                         "observations. The divisor is read from "
+                         "uns['glue_pairing']['oversample']; pass "
+                         "--assume-oversample if the object predates that.")
+    ap.add_argument("--diagnostics", type=Path, default=None,
+                    help="pairing_diagnostics.csv from the pairing job. Its "
+                         "independent_metacell_equiv column is the AUTHORITATIVE "
+                         "per-group independent-observation count -- computed "
+                         "from the limiting modality's cell count, which this "
+                         "script cannot see. Strongly preferred over the "
+                         "oversample-division fallback.")
+    ap.add_argument("--assume-oversample", type=float, default=None,
+                    help="fallback when no --diagnostics is given and the object "
+                         "records no oversample factor (1.0 = treat metacells "
+                         "as independent)")
     ap.add_argument("--block", type=int, default=20_000,
                     help="regions per streaming block (default 20000)")
     ap.add_argument("--dry-run", action="store_true",
@@ -147,7 +201,7 @@ def main():
 
     try:
         import mudata
-        from scipy.stats import rankdata
+        from scipy.stats import rankdata, norm
     except ImportError as e:
         sys.exit(f"ERROR: needs mudata and scipy ({e})\n"
                  "       conda activate scplus-pairing")
@@ -164,8 +218,63 @@ def main():
     labels = A.obs[args.group_key].astype(str).to_numpy()
     n_mc, n_reg = A.shape
     groups, counts = np.unique(labels, return_counts=True)
-    keep = counts >= args.min_metacells
-    skipped = [(g, int(c)) for g, c, k in zip(groups, counts, keep) if not k]
+
+    # Filter on INDEPENDENT observations, not raw metacell count. With
+    # oversample > 1 the metacells within a group share cells, so the raw count
+    # overstates how much independent evidence a one-vs-rest test actually has
+    # -- by exactly the oversample factor. Filtering on the raw count let every
+    # group through: the smallest here is 22 metacells, but that is ~3
+    # independent observations at oversample=8.
+    # Preferred source: the diagnostics CSV the pairing job wrote. Its
+    # independent_metacell_equiv is derived from the LIMITING modality's cell
+    # count, which is not recoverable from the paired object -- dividing the
+    # emitted metacell count by the oversample factor is close but not the same
+    # number (Pro-Monocyte: floor(22/8)=2 vs the diagnostics' 1).
+    indep_src = None
+    indep_map = {}
+    if args.diagnostics is not None:
+        if not args.diagnostics.exists():
+            sys.exit(f"ERROR: --diagnostics {args.diagnostics} not found")
+        import csv as _csv
+        with open(args.diagnostics) as fh:
+            for row in _csv.DictReader(fh):
+                key = row.get("group") or row.get("Group")
+                val = row.get("independent_metacell_equiv")
+                if key is None or val in (None, ""):
+                    continue
+                indep_map[str(key)] = int(float(val))
+        if not indep_map:
+            sys.exit(f"ERROR: {args.diagnostics} has no "
+                     "'independent_metacell_equiv' column -- is it the "
+                     "diagnostics CSV from the pairing job?")
+        missing = [g for g in groups if g not in indep_map]
+        if missing:
+            sys.exit("ERROR: --diagnostics is missing these groups: "
+                     f"{missing}\n       It does not describe this object. "
+                     "Refusing to guess.")
+        indep = np.array([indep_map[g] for g in groups], dtype=int)
+        indep_src = f"{args.diagnostics.name} (independent_metacell_equiv)"
+        ovs = None
+    else:
+        ovs = args.assume_oversample
+        if ovs is None:
+            ovs = (md.uns.get("glue_pairing", {}) or {}).get("oversample")
+        if ovs is None:
+            sys.exit("ERROR: cannot determine independent-observation counts.\n"
+                     "       Pass --diagnostics pairing_diagnostics.csv (best), "
+                     "or --assume-oversample.\n       Raw metacell counts "
+                     "overstate support by the oversample factor, so\n"
+                     "       filtering on them lets thinly-supported groups "
+                     "through.")
+        ovs = float(ovs)
+        if ovs < 1.0:
+            sys.exit(f"ERROR: oversample={ovs} < 1 makes no sense")
+        indep = np.maximum(1, np.floor(counts / ovs)).astype(int)
+        indep_src = (f"metacells / oversample={ovs:g} "
+                     f"(APPROXIMATE -- prefer --diagnostics)")
+    keep = indep >= args.min_independent
+    skipped = [(g, int(c), int(i))
+               for g, c, i, k in zip(groups, counts, indep, keep) if not k]
 
     chrom, start, end, bad = parse_regions(A.var_names)
     print("=" * 74)
@@ -178,11 +287,12 @@ def main():
         print(f"  UNPARSEABLE     : {len(bad)} var_names, e.g. {bad[:3]}")
         sys.exit("ERROR: every var_name must be chr:start-end -- refusing to "
                  "write region sets from a partially parsed peak set.")
+    print(f"  independence    : {indep_src}")
     print(f"  groups          : {len(groups)}  "
           f"({int(keep.sum())} kept, {len(skipped)} below "
-          f"--min-metacells={args.min_metacells})")
-    for g, c in skipped:
-        print(f"    skip {g!r}: {c} metacells")
+          f"--min-independent={args.min_independent})")
+    for g, c, i in skipped:
+        print(f"    skip {g!r}: {c} metacells = ~{i} independent")
     blk_gb = args.block * n_mc * 4 / 1024**3
     print(f"  streaming block : {args.block:,} regions -> {blk_gb:.2f} GB "
           f"resident (full matrix would be "
@@ -199,21 +309,24 @@ def main():
     eff = {g: np.empty(n_reg, dtype=np.float32) for g in kept_groups}
     pv = {g: np.ones(n_reg, dtype=np.float64) for g in kept_groups}
 
-    from scipy.stats import mannwhitneyu
+    # RANK ONCE PER BLOCK, not once per group. scipy's mannwhitneyu re-ranks on
+    # every call, so calling it 24 times per block ranks the same data 24 times.
+    # Measured: 1.84 ms per region per group that way -- 393,832 x 24 = 4.8 h,
+    # against a 4 h walltime, so the job would have been killed with nothing
+    # written. Ranking once and deriving each group's U from its rank sum is
+    # 20x faster (~14 min) and agrees with scipy to 5e-08, ties included.
     for i0 in range(0, n_reg, args.block):
         i1 = min(i0 + args.block, n_reg)
         blk = A[:, i0:i1].to_memory().X
         blk = np.asarray(blk.todense()) if hasattr(blk, "todense") else np.asarray(blk)
+        Rk = rankdata(blk, axis=0)
+        tie = _tie_terms(blk)
         for g, m in masks.items():
-            a, b = blk[m], blk[~m]
+            a_mean = blk[m].mean(0)
+            b_mean = blk[~m].mean(0)
             # log2 fold change on a pseudocount, since accessibility can be 0
-            eff[g][i0:i1] = (np.log2(a.mean(0) + 1e-6)
-                             - np.log2(b.mean(0) + 1e-6))
-            try:
-                u = mannwhitneyu(a, b, axis=0, alternative="greater")
-                pv[g][i0:i1] = u.pvalue
-            except ValueError:
-                pv[g][i0:i1] = 1.0
+            eff[g][i0:i1] = (np.log2(a_mean + 1e-6) - np.log2(b_mean + 1e-6))
+            pv[g][i0:i1] = _mwu_from_ranks(Rk, m, tie, norm)
         if i0 % (args.block * 5) == 0:
             print(f"    ... {i1:,}/{n_reg:,} regions")
 
@@ -239,7 +352,9 @@ def main():
                          f"{safe}_{j}\t{eff[g][j]:.4f}\t.\n")
         summary.append(dict(group=g, file=path.name, n_regions=int(idx.size),
                             capped=bool(capped),
-                            n_metacells=int(masks[g].sum())))
+                            n_metacells=int(masks[g].sum()),
+                            n_independent=int(
+                                dict(zip(groups, indep))[g])))
         print(f"  {g:<26} {idx.size:>6,} regions"
               + ("  (capped)" if capped else ""))
 
@@ -247,8 +362,11 @@ def main():
         json.dumps(dict(source=str(args.h5mu), group_key=args.group_key,
                         min_log2fc=args.min_log2fc, fdr=args.fdr,
                         max_regions=args.max_regions,
-                        skipped_groups=[dict(group=g, n_metacells=c)
-                                        for g, c in skipped],
+                        independence_source=indep_src,
+                        min_independent=args.min_independent,
+                        skipped_groups=[dict(group=g, n_metacells=c,
+                                             n_independent=i)
+                                        for g, c, i in skipped],
                         sets=summary), indent=2))
     empty = [s["group"] for s in summary if s["n_regions"] == 0]
     print()

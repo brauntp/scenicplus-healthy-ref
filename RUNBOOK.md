@@ -168,9 +168,42 @@ second subdirectory; the DAG runs both families.
 
 Validated on fixtures with planted ground truth: perfect recovery (precision and
 recall 1.000 on 1,800 planted regions across 6 groups) and zero regions with an
-explicit warning under a null. `--min-metacells 5` skips Pro-Monocyte (1) and
-Late GMP (3) — groups whose eRegulons `docs/QC_RESULT.md` already flagged as
-unsupported.
+explicit warning under a null — including a tie-heavy null with 85% exact zeros,
+since real accessibility is tie-heavy and the significance test has to survive
+that.
+
+**Pass `--diagnostics pairing_diagnostics.csv`.** The thin-group filter counts
+*independent* observations, not metacells, and the two differ by the oversample
+factor. Raw metacell counts here run from 22 (Pro-Monocyte) to 5,058 (Pro-B), so
+every group clears a raw threshold of 5 — filtering on them would skip nothing.
+The honest denominators are the `independent_metacell_equiv` values the pairing
+job already computed:
+
+| group | metacells | independent | `--min-independent 5` |
+|---|---|---|---|
+| Pro-Monocyte | 22 | 1 | skipped |
+| cDC | 44 | 2 | skipped |
+| Late GMP | 48 | 3 | skipped |
+| Megakaryocyte Precursor | 60 | 5 | kept |
+| Stromal | 78 | 9 | kept |
+
+So **three** groups are skipped, not the two I first wrote — and only when the
+diagnostics file is supplied. Without it the script falls back to
+`metacells / oversample`, which is close but not the same number (Pro-Monocyte
+`floor(22/8) = 2` against the diagnostics' 1) and skips only Pro-Monocyte; it
+labels itself APPROXIMATE in the output. It refuses outright if the diagnostics
+file does not name every group in the object.
+
+All three skipped groups are ones `docs/QC_RESULT.md` had already flagged as
+too thinly supported to trust an eRegulon from.
+
+**Runtime, measured:** 4.37 s per 2,000-region block → ~14 min for 393,832
+regions, against a 2 h walltime. The first version called
+`scipy.mannwhitneyu` once per group, which re-ranks the same block 24 times:
+1.84 ms per region per group, i.e. **4.8 h against the 4 h walltime I had
+originally set** — killed with nothing written, since BEDs land only at the end.
+Ranking once per block and deriving each group's U from its rank sum is 20×
+faster and matches scipy to 5e-08, tie and continuity corrections included.
 
 ## Which env does each step need?
 

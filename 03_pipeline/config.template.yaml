@@ -88,7 +88,7 @@ input_data:
   GEX_anndata_fname: "<ABS_PATH>/00_rna/rna_processed.h5ad"
 
   # -- Directory of region sets for motif enrichment. Layout expected by
-  #    cli/commands.py:216-224: region_set_folder/<SUBFOLDER>/*.bed -- one
+  #    cli/commands.py:216-224: region_set_folder/<family>/*.bed -- one
   #    SUBDIRECTORY per region-set family (e.g. "topics_otsu",
   #    "topics_top_3k", "DARs_cell_type"), each holding one .bed per set.
   #    Loose .bed files at the top level are IGNORED (only directories are

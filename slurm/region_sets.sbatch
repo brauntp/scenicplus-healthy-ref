@@ -13,9 +13,16 @@
 # a backed object, so peak RSS is set by the block (1.9 GB at 20,000 regions x
 # 25,323 metacells), not by the 37 GB matrix. 16G is generous.
 #
-# Time is the uncertainty: Mann-Whitney per region per group is the cost centre,
-# 20 blocks x 24 groups. Tens of minutes to a couple of hours. 4h is padded --
-# a walltime kill loses everything, since BEDs are written only at the end.
+# Time is MEASURED, not guessed: 4.37 s per 2,000-region block (rankdata 3.40,
+# tie terms 0.92, all 24 groups 0.06) -> ~14 min for 393,832 regions. 2h is a
+# 8x margin, which matters because BEDs are written only at the end, so a
+# walltime kill loses everything.
+#
+# The first version of this script called scipy.mannwhitneyu once per group,
+# which re-ranks the same block 24 times: 1.84 ms per region per group, i.e.
+# 4.8 h against the 4 h walltime I had set. It would have been killed with
+# nothing written. Ranking once per block and deriving each group's U from its
+# rank sum is 20x faster and matches scipy to 5e-08.
 # =============================================================================
 #SBATCH --job-name=region_sets
 #SBATCH --partition=batch
@@ -23,7 +30,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=16G
-#SBATCH --time=04:00:00
+#SBATCH --time=02:00:00
 #SBATCH --output=jobs/%x-%j.out
 #SBATCH --error=jobs/%x-%j.err
 
@@ -46,6 +53,22 @@ fi
 PAIRED="${PAIRED:-ACC_GEX.h5mu}"
 GROUP_KEY="${GROUP_KEY:-predicted_CellType_Broad}"
 OUTDIR="${REGION_SET_DIR:-01_atac/region_sets}"
+# The pairing job's diagnostics carry independent_metacell_equiv, the honest
+# per-group denominator. Without it the script falls back to
+# metacells/oversample, which is APPROXIMATE and skips fewer groups.
+DIAGNOSTICS="${DIAGNOSTICS:-}"
+if [[ -z "${DIAGNOSTICS}" ]]; then
+    for cand in pairing_diagnostics.csv pairing_diagnostics/pairing_diagnostics.csv; do
+        [[ -f "$cand" ]] && { DIAGNOSTICS="$cand"; break; }
+    done
+fi
+if [[ -n "${DIAGNOSTICS}" ]]; then
+    echo "diagnostics : ${DIAGNOSTICS} (authoritative independence counts)"
+else
+    echo "diagnostics : NONE FOUND -- falling back to metacells/oversample."
+    echo "              That is approximate and skips FEWER thin groups."
+    echo "              Set DIAGNOSTICS=<path> if the CSV is elsewhere."
+fi
 
 # Validate BEFORE importing anything: an empty variable expanding to a bare
 # path is how an earlier job wrote to the filesystem root.
@@ -81,7 +104,8 @@ python 01_cistopic/region_sets_from_metacells.py \
     --min-log2fc "${MIN_LOG2FC:-0.25}" \
     --fdr "${DAR_FDR:-0.05}" \
     --max-regions "${MAX_REGIONS:-20000}" \
-    --min-metacells "${MIN_METACELLS:-5}"
+    --min-independent "${MIN_INDEPENDENT:-5}" \
+    ${DIAGNOSTICS:+--diagnostics "${DIAGNOSTICS}"}
 RS_RC=$?
 echo "generator exit: ${RS_RC}"
 

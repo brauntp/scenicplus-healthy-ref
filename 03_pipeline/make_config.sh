@@ -103,15 +103,19 @@ else
     log "         assuming DB_PREFIX=${DB_PREFIX}; run the download first"
 fi
 
-# The region-set subfolder. cli/commands.py globs region_set_folder/<SUB>/*.bed.
-SUBFOLDER="${REGION_SET_SUBFOLDER:-topics_otsu}"
+# NOTE: there is deliberately no SUBFOLDER substitution. The template's only
+# occurrence of it was inside a comment describing the layout
+# (region_set_folder/<family>/*.bed), so filling it with a guess made that
+# comment name a family that may not exist. SCENIC+ scans EVERY subdirectory of
+# region_set_folder, so no single family needs naming in the config: whatever
+# 01_cistopic/region_sets_from_metacells.py wrote (DARs_cell_type) is picked up,
+# and adding topics later is a second subdirectory with no config change.
 
 log "substitutions:"
 log "  ABS_PATH          = ${REPO_ROOT}"
 log "  DB_PREFIX         = ${DB_PREFIX}"
 log "  N_CPU             = ${N_CPU}"
 log "  CELLTYPE_OBS_KEY  = ${GROUP_KEY}"
-log "  SUBFOLDER         = ${SUBFOLDER}"
 
 # --------------------------------------------------------------------------- #
 # Substitute. sed with a delimiter that cannot appear in a path.
@@ -122,7 +126,6 @@ sed -e "s|<ABS_PATH>|${REPO_ROOT}|g" \
     -e "s|<DB_PREFIX>|${DB_PREFIX}|g" \
     -e "s|<N_CPU>|${N_CPU}|g" \
     -e "s|<CELLTYPE_OBS_KEY>|${GROUP_KEY}|g" \
-    -e "s|<SUBFOLDER>|${SUBFOLDER}|g" \
     "$TEMPLATE" > "$RENDERED"
 
 LEFT="$(grep -oE '<[A-Z_]{3,}>' "$RENDERED" | sort -u || true)"
