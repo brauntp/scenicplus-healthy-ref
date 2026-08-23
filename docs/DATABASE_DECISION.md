@@ -22,10 +22,25 @@ and too small to settle the question by itself.
 
 **A threshold or width artifact.** 82% of the loss is peaks with *zero* overlap
 with any cCRE — not near-misses. Loosening `fraction_overlap` recovers at most
-the other 18%. The width mismatch is not the problem: SCREEN regions are
-150–350 bp (median 272), all narrower than 0.4 × 500 = 200 bp, so the query-side
-route passes on a median of only 109 bp of overlap, and the median best-overlap
-fraction among retained peaks is 1.000.
+the other 18%. The width mismatch is not the problem either. SCREEN regions are
+150–350 bp (median 272) against 500 bp peaks, and pycistarget passes a pair if
+*either* overlap fraction clears 0.4, so the two routes demand different
+absolute overlaps:
+
+| route | overlap required |
+|---|---|
+| query side (overlap / DB width) | 0.4 × 150–350 = **60–140 bp**, median 109 |
+| target side (overlap / peak width) | 0.4 × 500 = **200 bp**, flat |
+
+Because every SCREEN region is narrower than 500 bp, the query-side requirement
+is the smaller of the two for **100%** of regions — so the effective bar is a
+median 109 bp of overlap, not 200. Narrow database regions make representability
+*easier*, not harder. Confirmed empirically: the median best-overlap fraction
+among retained peaks is 1.000, i.e. the typical retained peak swallows its
+matched region whole.
+
+(Only 20.5% of SCREEN regions are themselves ≤200 bp; that figure is about the
+width distribution and is not what the threshold compares against.)
 
 **A localised annotation gap.** Per-chromosome loss is nearly uniform: worst is
 chr4 at 22.5%, only 3.7 points above the 18.80% mean. For comparison, a fixture
