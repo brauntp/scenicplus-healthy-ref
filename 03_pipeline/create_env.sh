@@ -91,6 +91,40 @@ for c in mamba micromamba conda; do
 done
 [[ -n "$SOLVER" ]] || die "no mamba/micromamba/conda on PATH"
 
+
+# Locate an env's python WITHOUT parsing `<solver> env list`.
+#
+# That listing can fail for reasons unrelated to the envs themselves -- an
+# unreadable ~/.condarc is enough -- and it fails by printing nothing useful to
+# stdout while still exiting 0. Grepping it then reports "env does not exist"
+# for an env that is not only present but ACTIVE, which is exactly what
+# happened: `bash create_env.sh --repair-pins` refused inside an activated
+# scenicplus prompt.
+#
+# The filesystem cannot lie about this. Search, in order: the active env, the
+# solver's own envs dir, and the standard roots.
+env_python() {
+    local name="$1" c
+    # Already activated? Then $CONDA_PREFIX is authoritative.
+    if [[ "${CONDA_DEFAULT_ENV:-}" == "$name" && -x "${CONDA_PREFIX:-}/bin/python" ]]; then
+        printf '%s\n' "${CONDA_PREFIX}/bin/python"; return 0
+    fi
+    local roots=()
+    [[ -n "${MAMBA_ROOT_PREFIX:-}" ]] && roots+=("${MAMBA_ROOT_PREFIX}/envs")
+    [[ -n "${CONDA_ENVS_PATH:-}" ]]   && roots+=("${CONDA_ENVS_PATH}")
+    # `conda info --base` is a different code path from `env list` and usually
+    # survives a bad rc file; fall back to the usual install locations.
+    local base
+    base="$("$SOLVER" info --base 2>/dev/null | tail -1)"
+    [[ -n "$base" && -d "$base" ]] && roots+=("${base}/envs")
+    roots+=("$HOME/miniconda3/envs" "$HOME/miniforge3/envs" "$HOME/mambaforge/envs"
+            "$HOME/anaconda3/envs" "$HOME/micromamba/envs" "$HOME/.conda/envs")
+    for c in "${roots[@]}"; do
+        [[ -x "${c}/${name}/bin/python" ]] && { printf '%s\n' "${c}/${name}/bin/python"; return 0; }
+    done
+    return 1
+}
+
 ENV_NAME="$(python3 -c "
 import sys
 for line in open(sys.argv[1]):
@@ -102,37 +136,55 @@ if (( REPAIR )); then
     # Repair an EXISTING env in place, rather than an hour-long rebuild. Fixes
     # the two things the first real build got wrong: pinned versions that the
     # unconstrained repair step upgraded, and git packages that never landed.
-    "$SOLVER" env list 2>/dev/null | grep -qE "^${ENV_NAME}[[:space:]]" ||
-        die "env '${ENV_NAME}' does not exist -- run without --repair-pins to build it"
-    PY="$("$SOLVER" run -n "$ENV_NAME" python -c 'import sys; print(sys.executable)' 2>/dev/null)"
-    [[ -n "$PY" ]] || die "cannot locate python in ${ENV_NAME}"
+    PY="$(env_python "$ENV_NAME")" || die "cannot find a python for env '${ENV_NAME}'.
+     Searched \$CONDA_PREFIX (if active), \$MAMBA_ROOT_PREFIX/envs,
+     \`${SOLVER} info --base\`/envs and the usual ~/ install roots.
+     If the env lives elsewhere, activate it and re-run:
+       conda activate ${ENV_NAME}
+       bash 03_pipeline/create_env.sh --repair-pins"
     echo "=============================================================="
     echo "repairing ${ENV_NAME} in place"
     echo "=============================================================="
     echo "  python: $PY"
     echo
+    # Confirm this really is the SCENIC+ env before force-reinstalling 34
+    # pinned packages into it. env_python() resolves by NAME, and a name can
+    # point somewhere unexpected -- during development this branch started
+    # rewriting an unrelated env that happened to match. Two cheap signals:
+    # the interpreter version the spec pins, and at least one package only this
+    # env would carry.
+    PYV="$("$PY" -c 'import sys; print("%d.%d.%d" % sys.version_info[:3])' 2>/dev/null)"
+    WANTV="$(grep -oE '^[[:space:]]+- python=[0-9.]+' "$YML" | head -1 |
+             grep -oE '[0-9]+\.[0-9]+\.[0-9]+')"
+    echo "  python version: ${PYV}  (spec pins ${WANTV})"
+    if [[ -n "$WANTV" && "$PYV" != "$WANTV" ]]; then
+        die "that interpreter is ${PYV}, but ${YML} pins python=${WANTV}.
+     Refusing to force-reinstall 34 pinned packages into an env that is
+     probably not the one this spec built. If it IS the right env, the
+     python pin has drifted and a rebuild is the honest fix."
+    fi
 
     PIPREQ="$(mktemp -t scplus-pip.XXXXXX)"
-    trap 'rm -f "$PIPREQ" "${PIPREQ}.pypi" "${PIPREQ}.git" "${PIPREQ}.cons"' EXIT
+    trap 'rm -f "$PIPREQ" "${PIPREQ}-pypi" "${PIPREQ}-gitreqs" "${PIPREQ}-cons"' EXIT
     python3 - "$YML" "$PIPREQ" <<'PYEOF'
 import sys, yaml
 d = yaml.safe_load(open(sys.argv[1]))
 pip = [x for y in d["dependencies"] if isinstance(y, dict) for x in y.get("pip", [])]
 open(sys.argv[2], "w").write("\n".join(pip) + "\n")
 PYEOF
-    grep -v "git+" "$PIPREQ" > "${PIPREQ}.pypi"
-    grep    "git+" "$PIPREQ" > "${PIPREQ}.git"
-    cat "${PIPREQ}.pypi" "$REPO_ROOT/$CONS" > "${PIPREQ}.cons"
+    grep -v "git+" "$PIPREQ" > "${PIPREQ}-pypi"
+    grep    "git+" "$PIPREQ" > "${PIPREQ}-gitreqs"
+    cat "${PIPREQ}-pypi" "$REPO_ROOT/$CONS" > "${PIPREQ}-cons"
 
     log "[1/3] forcing the pinned versions back (they are the spec)"
-    export PIP_CONSTRAINT="${PIPREQ}.cons"
+    export PIP_CONSTRAINT="${PIPREQ}-cons"
     "$PY" -m pip install --no-cache-dir --disable-pip-version-check \
-        --force-reinstall --no-deps -r "${PIPREQ}.pypi"
+        --force-reinstall --no-deps -r "${PIPREQ}-pypi"
     P1=$?
 
     log "[2/3] reinstalling the git packages, --no-deps"
     "$PY" -m pip install --no-cache-dir --no-deps --disable-pip-version-check \
-        --force-reinstall -r "${PIPREQ}.git"
+        --force-reinstall -r "${PIPREQ}-gitreqs"
     P2=$?
 
     log "[3/3] repairing what pip check now reports, WITHIN the pins"
@@ -209,7 +261,7 @@ echo "  isolation, the git packages --no-deps (scenicplus pins LoomXpy@main"
 echo "  against our commit pin), and pip check drives a measured repair."
 echo
 
-if "$SOLVER" env list 2>/dev/null | grep -qE "^${ENV_NAME}[[:space:]]"; then
+if env_python "$ENV_NAME" >/dev/null 2>&1; then
     die "env '${ENV_NAME}' already exists. Remove it first:
        ${SOLVER} env remove -n ${ENV_NAME}
      or build under a different name:
@@ -276,7 +328,7 @@ PYEOF
 # Build the conda side WITHOUT the pip section: passing the yml directly would
 # let mamba run pip once, with isolation, which is the failure.
 CONDAYML="$(mktemp -t scplus-conda.XXXXXX).yml"
-trap 'rm -f "$PIPREQ" "${PIPREQ}.pypi" "${PIPREQ}.git" "${PIPREQ}.cons" "$CONDAYML"' EXIT
+trap 'rm -f "$PIPREQ" "${PIPREQ}-pypi" "${PIPREQ}-gitreqs" "${PIPREQ}-cons" "$CONDAYML"' EXIT
 python3 - "$YML" "$CONDAYML" <<'PYEOF'
 import sys, yaml
 spec, out = sys.argv[1], sys.argv[2]
@@ -310,7 +362,8 @@ fi
 log "[1/5] conda section (${ENV_NAME})"
 "$SOLVER" env create -f "$CONDAYML" || die "conda solve failed"
 
-PY="$("$SOLVER" run -n "$ENV_NAME" python -c 'import sys; print(sys.executable)' 2>/dev/null)"
+PY="$(env_python "$ENV_NAME")" ||
+    PY="$("$SOLVER" run -n "$ENV_NAME" python -c 'import sys; print(sys.executable)' 2>/dev/null)"
 [[ -n "$PY" ]] || die "cannot locate python in the new env"
 PIPV="$("$PY" -m pip --version | awk '{print $2}')"
 log "env python: $PY  (pip $PIPV)"
@@ -367,14 +420,14 @@ A_RC=$?
 # LoomXpy@main, and pip treats two URLs for one name as irreconcilable
 # regardless of the versions matching.
 log "[3/5] pass B1 -- pinned PyPI requirements (isolation ON)"
-grep -v "git+" "$PIPREQ" > "${PIPREQ}.pypi"
-"$PY" -m pip install --no-cache-dir --disable-pip-version-check -r "${PIPREQ}.pypi"
+grep -v "git+" "$PIPREQ" > "${PIPREQ}-pypi"
+"$PY" -m pip install --no-cache-dir --disable-pip-version-check -r "${PIPREQ}-pypi"
 B1_RC=$?
 
 log "[4/5] pass B2 -- the git packages, --no-deps (pinned refs are the spec)"
-grep "git+" "$PIPREQ" > "${PIPREQ}.git"
+grep "git+" "$PIPREQ" > "${PIPREQ}-gitreqs"
 "$PY" -m pip install --no-cache-dir --no-deps --disable-pip-version-check \
-    -r "${PIPREQ}.git"
+    -r "${PIPREQ}-gitreqs"
 B2_RC=$?
 
 log "[5/5] repair -- install what pip check reports missing"
@@ -394,8 +447,8 @@ if [[ -n "${MISSING// /}" ]]; then
     # version alone. If a missing package genuinely cannot coexist with the
     # pins, pip now fails here and says so, instead of silently rewriting the
     # environment the spec describes.
-    cat "${PIPREQ}.pypi" "$REPO_ROOT/$CONS" > "${PIPREQ}.cons"
-    PIP_CONSTRAINT="${PIPREQ}.cons" \
+    cat "${PIPREQ}-pypi" "$REPO_ROOT/$CONS" > "${PIPREQ}-cons"
+    PIP_CONSTRAINT="${PIPREQ}-cons" \
         "$PY" -m pip install --no-cache-dir --disable-pip-version-check ${MISSING}
     R_RC=$?
     log "  re-checking"

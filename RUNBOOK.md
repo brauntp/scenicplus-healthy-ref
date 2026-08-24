@@ -337,7 +337,15 @@ git packages and checks the `scenicplus` console script responds. On the first
 build `scenicplus --help` gave "command not found" while the build reported
 success, because nothing checked.
 
-**If an existing env has drifted**, repair it in place rather than rebuilding:
+**If an existing env has drifted**, repair it in place rather than rebuilding.
+(The first version of this refused with "env 'scenicplus' does not exist" from
+*inside an activated scenicplus prompt* — it parsed `micromamba env list`, which
+fails silently to stdout when it cannot read `~/.condarc` while still exiting 0.
+Env detection is now filesystem-based: `$CONDA_PREFIX` when active, then
+`$MAMBA_ROOT_PREFIX/envs`, `<solver> info --base`/envs, and the usual install
+roots. It also refuses if the interpreter version does not match the spec's
+python pin, so a name collision cannot send a force-reinstall into the wrong
+env.)
 
 ```bash
 bash 03_pipeline/create_env.sh --repair-pins
