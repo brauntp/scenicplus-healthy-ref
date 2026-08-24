@@ -131,7 +131,28 @@ python 01_cistopic/choose_dar_threshold.py --stats 01_atac/dar_stats.npz \
 ```
 
 **Stromal's 9,796 is the binding constraint** — it is the smallest FDR-passing
-count at 0.25, so any `--top-n` up to that is feasible for all 21 groups.
+count at 0.25, so any `--top-n` up to that is feasible for all 21 groups. The
+real run at N=5,000 confirms it: zero groups short.
+
+`--top-n` accepts several values so the tradeoff is visible before committing:
+
+```bash
+python 01_cistopic/choose_dar_threshold.py --stats 01_atac/dar_stats.npz \
+    --top-n 2000 5000 8000
+```
+
+At N=5,000 on this reference the implied cutoff spans log2fc **1.32 to 3.65**
+— 2.5x to 12.6x fold-change, a 5x difference in what it takes a region to
+qualify. A region at 4x enrichment enters the most permissive group's set and
+is excluded from the strictest one's.
+
+The span narrows as N grows, which is the opposite of the intuition that
+smaller sets are "stricter": a larger N reaches further down every group's
+ranking, so the groups' cutoffs converge. Against that, N controls how much
+cisTarget work the run costs and how stable each NES is
+(E[regions in AUC window] = N × 0.005; below ~10 the NES is noise). At 5,000
+that expectation is 25, and total BED lines are 105,000 against 409,796 for
+the capped sets — roughly 4x less enrichment work.
 
 **What equal-N costs, stated plainly.** Set membership becomes rank-based rather
 than effect-based: a region admitted in one group would be rejected in another,

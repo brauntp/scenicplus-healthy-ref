@@ -92,7 +92,7 @@ def main():
                          "regions gives 0.04 expected and 473 gives 2.4, at "
                          "which point a NES of 3.0 is noise. ~2,000 is where "
                          "the recovery curve stabilises.")
-    ap.add_argument("--top-n", type=int, default=None,
+    ap.add_argument("--top-n", type=int, nargs="+", default=None,
                     help="ignore --min-log2fc and take the top N regions per "
                          "group by effect size (FDR still applied). Use when no "
                          "single threshold serves every group -- which is the "
@@ -132,23 +132,43 @@ def main():
 
     if args.top_n is not None:
         print()
-        print(f"  --top-n {args.top_n:,}: equal-sized sets, no shared threshold.")
-        n_avail = (sig.sum(1))
+        print("  equal-sized sets: no shared threshold, so nothing caps and "
+              "nothing starves.")
+        print("  The cost is the implied cutoff SPAN -- the range of log2fc at "
+              "which a region")
+        print("  enters, across groups. A wide span means membership is decided "
+              "by rank within")
+        print("  a group, not by effect size.")
+        print()
+        n_avail = sig.sum(1)
+        srt = [np.sort(eff[i][sig[i]])[::-1] for i in range(n_grp)]
+        print(f"{'N':>8}{'short':>7}{'cutoff lo':>11}{'cutoff hi':>11}"
+              f"{'as fold-change':>18}{'AUC-window E[n]':>17}{'BED lines':>12}")
+        print("-" * 84)
+        for N in sorted(args.top_n):
+            short = [(groups[i], int(n_avail[i]))
+                     for i in np.flatnonzero(n_avail < N)]
+            cut = np.array([srt[i][min(N, int(n_avail[i])) - 1]
+                            if n_avail[i] else np.nan for i in range(n_grp)])
+            lo_c, hi_c = float(np.nanmin(cut)), float(np.nanmax(cut))
+            print(f"{N:>8,}{len(short):>7}{lo_c:>11.2f}{hi_c:>11.2f}"
+                  f"{2 ** lo_c:>9.1f}x -{2 ** hi_c:>6.1f}x"
+                  f"{N * 0.005:>17.0f}{N * n_grp:>12,}")
+        print()
+        print(f"  AUC-window E[n] is N x ctx_auc_threshold (0.005): the expected "
+              f"regions landing")
+        print(f"  in cisTarget's integration window under the null. Below ~10 "
+              f"the NES is noise.")
+        if len(args.top_n) > 1:
+            print()
+            print("  Pick one and re-run with a single --top-n N --out-dir DIR "
+                  "--write.")
+            print("=" * 78)
+            return
         short = [(groups[i], int(n_avail[i]))
-                 for i in np.flatnonzero(n_avail < args.top_n)]
-        print(f"    groups with fewer than {args.top_n:,} FDR-passing regions: "
-              f"{len(short)}")
+                 for i in np.flatnonzero(n_avail < args.top_n[0])]
         for g, n in short[:8]:
-            print(f"      {g:<26}{n:>8,}")
-        eff_at = np.array([np.sort(eff[i][sig[i]])[::-1][
-            min(args.top_n, int(n_avail[i])) - 1] if n_avail[i] else np.nan
-            for i in range(n_grp)])
-        print(f"    implied log2fc cutoff spans "
-              f"{np.nanmin(eff_at):.2f} to {np.nanmax(eff_at):.2f} across groups")
-        print("    -- that spread is the cost: a region admitted in one group "
-              "would be")
-        print("       rejected in another, so set membership is rank-based, not "
-              "effect-based.")
+            print(f"    SHORT {g:<26}{n:>8,} FDR-passing regions")
 
         if not args.write:
             print()
@@ -386,8 +406,9 @@ def _write_beds(args, groups, eff, sig, chrom, start, end):
         if args.top_n is not None:
             idx = np.flatnonzero(sig[i])
             capped = False
-            if idx.size > args.top_n:
-                idx = idx[np.argsort(-eff[i][idx])[:args.top_n]]
+            _n = args.top_n[0]
+            if idx.size > _n:
+                idx = idx[np.argsort(-eff[i][idx])[:_n]]
         else:
             sel = sig[i] & (eff[i] >= args.min_log2fc)
             idx = np.flatnonzero(sel)
@@ -408,7 +429,8 @@ def _write_beds(args, groups, eff, sig, chrom, start, end):
 
     (args.out_dir / f"{args.family}.summary.json").write_text(
         json.dumps(dict(source=str(args.stats), min_log2fc=args.min_log2fc,
-                        top_n=args.top_n, min_usable=args.min_usable,
+                        top_n=args.top_n[0] if args.top_n else None,
+                        min_usable=args.min_usable,
                         fdr=args.fdr, max_regions=args.max_regions,
                         rewritten_by="01_cistopic/choose_dar_threshold.py",
                         sets=summary), indent=2))
