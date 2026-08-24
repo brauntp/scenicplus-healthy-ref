@@ -720,6 +720,13 @@ if [[ $rc -ne 0 ]]; then
     echo "      rankings DB is memory-resident; raise --mem in slurm/scenicplus.sbatch." >&2
     echo "    - 'No space left on device'     -> params_general.temp_dir filled up." >&2
     echo "    - logs are under ${WORKDIR}/.snakemake/log/" >&2
+    echo "" >&2
+    echo "  WHAT SURVIVED -- snakemake resumes from completed outputs, so this" >&2
+    echo "  is the first thing to read after a long partial run:" >&2
+    echo "" >&2
+    python 03_pipeline/pipeline_status.py --config "$CONFIG" \
+        --workdir "$WORKDIR" >&2 2>/dev/null || \
+        echo "  (pipeline_status.py unavailable; run it manually)" >&2
     exit $rc
 fi
 
