@@ -127,7 +127,9 @@ input_data:
 
 output_data:
   # ---------------------------------------------------------------------------
-  # All 15 outputs the Snakefile knows about. Relative paths resolve against
+  # All 18 outputs the Snakefile knows about -- verified against the pinned
+  # v1.0a2 Snakefile: it reads exactly these 18 output_data keys, no more and
+  # no fewer. Relative paths resolve against
   # Snakemake's working directory (`--directory`, set by run_pipeline.sh), so
   # keep them relative and let the driver decide where the run lands.
   # ---------------------------------------------------------------------------

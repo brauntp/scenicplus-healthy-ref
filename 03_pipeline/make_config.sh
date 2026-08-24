@@ -217,6 +217,21 @@ if not MUDATA_PRESENT:
     # both files. They stop being guards and become required inputs.
     BRANCH_DEAD = set()
 
+# Assert the output_data key count rather than documenting it. A stale hand-
+# maintained count ("15 outputs") is what made me write "the other fourteen"
+# into three files when there are 18 keys and 17 relative ones. A number nothing
+# checks is a number that drifts.
+_n_out = len([k for k, v in out.items() if isinstance(v, str)])
+_n_rel = len([k for k, v in out.items()
+              if isinstance(v, str) and not os.path.isabs(v)])
+print(f"  output_data            : {_n_out} keys, {_n_rel} relative "
+      f"(resolve against snakemake --directory), "
+      f"{_n_out - _n_rel} absolute")
+if _n_out != 18:
+    print(f"  NOTE: expected 18 output_data keys (the pinned v1.0a2 Snakefile "
+          f"reads exactly 18); found {_n_out}. If the template was edited "
+          f"deliberately, update this check and the header comment together.")
+
 fail = []
 # is_multiome picks WHICH prepare_GEX_ACC variant is defined; it does not decide
 # whether the rule runs. The presence of the paired mudata does that, and it is
