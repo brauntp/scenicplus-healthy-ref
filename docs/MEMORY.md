@@ -189,6 +189,65 @@ that is large for a 100k-cell object, and a shared filesystem makes topic
 modelling I/O-bound.
 
 
+## Correction: cisTarget loads the database ONCE PER WORKER
+
+`motif_enrichment_cistarget` was OOM-killed at `--mem=128G` while
+`motif_enrichment_dem` completed in the same run. The section below assumed one
+database load per rule. That is wrong, and the code says so
+(`scenicplus/cli/commands.py::run_motif_enrichment_cistarget`):
+
+```python
+cistarget_results = joblib.Parallel(n_jobs=n_cpu, temp_folder=temp_dir)(
+    joblib.delayed(_run_cistarget_single_region_set)(
+        ..., cistarget_db_fname=cistarget_db_fname, ...)
+    for key in region_set_dict)
+```
+
+`_run_cistarget_single_region_set` receives the database **filename** and
+constructs its own `cisTargetDatabase`. joblib's default backend is loky —
+separate processes, no shared mapping — so **`n_cpu` region sets are in flight
+at once, each holding its own slice.** At `--cores 16` that is up to sixteen
+concurrent loads.
+
+Two consequences:
+
+1. **The peak is driven by the largest few region sets, not by the total and not
+   by the largest single one.** It is the sum over the `n_cpu` largest sets that
+   happen to run together.
+2. **`--cpus-per-task` is as much a memory lever as `--mem`**, for this rule
+   specifically. Halving it roughly halves the peak.
+
+This also explains why DEM survived: its per-worker slice is a foreground set
+plus a *capped* background, not a whole cell type's DAR set.
+
+`03_pipeline/size_cistarget_memory.py` computes both from the real `.bed` files
+and the real database, rather than from an assumed geometry:
+
+```bash
+python 03_pipeline/size_cistarget_memory.py \
+    --region-set-folder 01_atac/region_sets \
+    --db resources/cistarget_db/hg38_screen_v10_clust.regions_vs_motifs.rankings.feather
+```
+
+### Equal-N region sets make this predictable
+
+With the DAR sets as written the sizes span ~27× (9,796 to 264,353 regions at
+`min_log2fc 0.25`), so the peak is a tail-driven sum that moves whenever a cell
+type gains regions. With `choose_dar_threshold.py --top-n N --write` every set
+is the same size and the peak becomes a product:
+
+| top-n | per worker (incl. transient 2×) | ×8 | ×16 | ×21 |
+|---|---|---|---|---|
+| 2,000 | 0.5 GB | 4 GB | 8 GB | 10 GB |
+| 5,000 | 1.2 GB | 10 GB | 20 GB | 26 GB |
+| 10,000 | 2.4 GB | 20 GB | 39 GB | 51 GB |
+| 20,000 | 4.9 GB | 39 GB | 78 GB | 103 GB |
+
+At `top-n 5,000` — comfortably above the ~2,000-region recovery-curve floor
+derived in `docs/REGION_SETS.md` — all 21 sets fit in a 128 GB allocation with
+every worker running. That is the recommended route, and the cost is the one
+already documented: membership becomes rank-based.
+
 ## Two rules, two terms — and why the job needs the larger
 
 The 43.2 GB figure above is `region_to_gene`. It is not the binding constraint.

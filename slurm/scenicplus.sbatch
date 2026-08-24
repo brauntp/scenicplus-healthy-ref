@@ -94,13 +94,33 @@
 #   here, and the peak_overlap_audit showed near-total query-side matching, so
 #   assume most peaks match rather than hoping for a small subset.)
 #
-# --mem must cover the MAX of the two terms, not the sum: every DB-loading rule
-# declares threads = n_cpu, so at --cores 16 snakemake serialises
-# motif_enrichment_cistarget, motif_enrichment_dem, eGRN_direct and
-# eGRN_extended -- two of them are never resident together.
+# CORRECTION, after 128G was ALSO OOM-killed at motif_enrichment_cistarget:
+# the figure above is one database load. cisTarget does not do one.
 #
-# 128G = the ~96 GB peak plus a third. If this still OOMs, the lever is
-# --cpus-per-task (fewer joblib workers in region_to_gene), not --mem alone.
+#   run_motif_enrichment_cistarget() calls
+#     joblib.Parallel(n_jobs=n_cpu)(delayed(_run_cistarget_single_region_set)(
+#         ..., cistarget_db_fname=..., ...) for key in region_set_dict)
+#   and the worker builds its OWN cisTargetDatabase from that filename. joblib's
+#   default backend is loky -- separate PROCESSES -- so n_cpu region sets are in
+#   flight at once, each holding its own slice.
+#
+# So the peak is the sum over the n_cpu LARGEST region sets, and
+# --cpus-per-task is a memory lever for this rule, not just a speed knob.
+# DEM survived the same allocation because its per-worker slice is a foreground
+# set plus a CAPPED background, not a whole cell type's DAR set.
+#
+# Rules DO still serialise with each other (each declares threads = n_cpu;
+# verified directly against snakemake), so --mem covers the largest single rule
+# -- but for cisTarget that rule's own peak is n_cpu-fold.
+#
+# Size it from the real region sets before submitting:
+#   python 03_pipeline/size_cistarget_memory.py \
+#       --region-set-folder 01_atac/region_sets --db <rankings.feather>
+#
+# 128G is retained because it is right for every OTHER rule. For cisTarget,
+# either lower --cpus-per-task or make the region sets equal-sized with
+# choose_dar_threshold.py --top-n 5000 --write, which fits all 21 sets in 128G
+# with every worker running. See docs/MEMORY.md.
 # See docs/MEMORY.md and 03_pipeline/probe_region_to_gene_memory.py.
 #SBATCH --mem=128G
 

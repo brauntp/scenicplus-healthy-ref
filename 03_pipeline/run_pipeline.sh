@@ -716,8 +716,12 @@ if [[ $rc -ne 0 ]]; then
     echo "${RED}${BLD}snakemake exited ${rc}${RST}" >&2
     echo "  Triage:" >&2
     echo "    - 'Directory cannot be locked'  -> a previous run was killed; rerun with --unlock" >&2
-    echo "    - killed with no python traceback -> almost always SLURM OOM. The cisTarget" >&2
-    echo "      rankings DB is memory-resident; raise --mem in slurm/scenicplus.sbatch." >&2
+    echo "    - killed with no python traceback -> almost always SLURM OOM. If the" >&2
+    echo "      failed rule is motif_enrichment_cistarget, MORE --mem may not be the" >&2
+    echo "      fix: it loads the database once PER joblib WORKER, so the peak scales" >&2
+    echo "      with --cpus-per-task. Size it first:" >&2
+    echo "        python 03_pipeline/size_cistarget_memory.py \\" >&2
+    echo "            --region-set-folder 01_atac/region_sets --db <rankings.feather>" >&2
     echo "    - 'No space left on device'     -> params_general.temp_dir filled up." >&2
     echo "    - logs are under ${WORKDIR}/.snakemake/log/" >&2
     echo "" >&2
