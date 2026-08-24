@@ -17,8 +17,10 @@
 #                      (default: $SLURM_CPUS_PER_TASK, else nproc, else 8).
 #   --workdir DIR      Snakemake working directory; all relative output_data
 #                      paths resolve here (default: dirname of --config).
-#   --snakefile FILE   Snakefile to run (default: the pinned upstream copy at
-#                      src/scenicplus/src/scenicplus/snakemake/Snakefile).
+#   --snakefile FILE   Snakefile to run. Default: resolved from the INSTALLED
+#                      scenicplus package via importlib.resources, i.e.
+#                      <site-packages>/scenicplus/snakemake/Snakefile -- the
+#                      same lookup scenicplus's own init_snakemake uses.
 #   -n | --dry-run     Passthrough to snakemake -n (also prints the plan).
 #   --unlock           Run `snakemake --unlock` and exit. Use after a job is
 #                      killed by SLURM (OOM / walltime) and leaves the .snakemake
@@ -58,7 +60,13 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONFIG=""
 CORES=""
 WORKDIR=""
-SNAKEFILE="${REPO_ROOT}/src/scenicplus/src/scenicplus/snakemake/Snakefile"
+# Empty by default: resolved from the INSTALLED scenicplus package below, not
+# from a path relative to this repo. An earlier default pointed at
+#   ${REPO_ROOT}/src/scenicplus/src/scenicplus/snakemake/Snakefile
+# -- a doubled src/scenicplus/ AND a location this repo never contains, so the
+# job died in its first second on a clone instruction that was never needed.
+# The Snakefile ships inside the package: <site-packages>/scenicplus/snakemake/.
+SNAKEFILE=""
 DRY_RUN=0
 UNLOCK=0
 VALIDATE_ONLY=0
@@ -92,10 +100,34 @@ done
 [[ -r "$CONFIG" ]] || die "config file not readable: $CONFIG"
 CONFIG="$(cd "$(dirname "$CONFIG")" && pwd)/$(basename "$CONFIG")"
 
-[[ -f "$SNAKEFILE" ]] || die "Snakefile not found: $SNAKEFILE" \
-    "Expected the pinned upstream copy. Clone it with:" \
-    "  git clone --depth 1 https://github.com/aertslab/scenicplus.git src/scenicplus" \
-    "or point --snakefile at your own copy."
+# Resolve the Snakefile from the installed package unless --snakefile was
+# given. importlib.resources is how scenicplus's own `init_snakemake` command
+# locates it (cli/commands.py: files("scenicplus.snakemake").joinpath(...)), so
+# this asks the same question the upstream code does.
+if [[ -z "$SNAKEFILE" ]]; then
+    SNAKEFILE="$(python - <<'PY' 2>/dev/null
+import sys
+try:
+    from importlib.resources import files
+    p = files("scenicplus.snakemake").joinpath("Snakefile")
+    print(p if p.is_file() else "", end="")
+except Exception:
+    print("", end="")
+PY
+)"
+fi
+
+[[ -n "$SNAKEFILE" && -f "$SNAKEFILE" ]] || die \
+    "cannot locate the scenicplus Snakefile." \
+    "It ships inside the installed package, at" \
+    "  <site-packages>/scenicplus/snakemake/Snakefile" \
+    "and is found via importlib.resources -- the same lookup scenicplus's own" \
+    "init_snakemake command uses. Getting nothing back means scenicplus is not" \
+    "importable by the active python, or was installed without its package" \
+    "data. Check:" \
+    "  python -c 'from importlib.resources import files; print(files(\"scenicplus.snakemake\"))'" \
+    "  bash 03_pipeline/smoke_test.sh" \
+    "Or pass --snakefile /path/to/Snakefile explicitly."
 SNAKEFILE="$(cd "$(dirname "$SNAKEFILE")" && pwd)/$(basename "$SNAKEFILE")"
 
 if [[ -z "$WORKDIR" ]]; then WORKDIR="$(dirname "$CONFIG")"; fi

@@ -1,11 +1,14 @@
 # =============================================================================
 # SCENIC+ v1.0a2 pipeline configuration  --  TEMPLATE
 # =============================================================================
-# Verified against the pinned upstream source:
-#   src/scenicplus/src/scenicplus/snakemake/Snakefile
-#   src/scenicplus/src/scenicplus/snakemake/config.yaml
-#   src/scenicplus/src/scenicplus/cli/scenicplus.py   (argparse types/defaults)
-#   src/scenicplus/src/scenicplus/cli/commands.py     (what each rule actually does)
+# Verified against the pinned upstream source at tag v1.0a2. Paths below are
+# WITHIN THAT REPOSITORY (github.com/aertslab/scenicplus), for provenance --
+# this project does not vendor a checkout, and the installed package lays the
+# same files out as <site-packages>/scenicplus/... :
+#   src/scenicplus/snakemake/Snakefile
+#   src/scenicplus/snakemake/config.yaml
+#   src/scenicplus/cli/scenicplus.py   (argparse types/defaults)
+#   src/scenicplus/cli/commands.py     (what each rule actually does)
 #
 # Every key below is read by the Snakefile. The Snakefile performs 151
 # `config[...][...]` lookups over exactly 67 distinct two-level keys; all 67 are

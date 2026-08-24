@@ -354,6 +354,37 @@ bash 03_pipeline/create_env.sh --repair-pins
 That force-reinstalls the pinned versions under constraint, reinstalls the git
 packages, repairs what `pip check` reports within the pins, and re-verifies.
 
+### The first pipeline submission died in one second
+
+`jobs/scenicplus-<id>.out` showed `started` and `finished` at the same
+timestamp, `pipeline FAILED (exit 1)`, and no reason — because snakemake and
+`run_pipeline.sh` write to stderr, which `#SBATCH --error` sends to the
+**`.err`** file. **Read both logs; the `.out` file alone cannot explain a
+failure.**
+
+The `.err` file named it:
+
+```
+ERROR Snakefile not found: .../scenicplus-healthy-ref/src/scenicplus/src/scenicplus/snakemake/Snakefile
+```
+
+Two bugs in one line. The path has a doubled `src/scenicplus/`, and it points
+inside this repository — which never contained a scenicplus checkout, so the
+default could not resolve under any circumstance. The error's advice compounded
+it by telling you to `git clone` the upstream repo, which was never needed: the
+Snakefile **ships inside the installed package**, and scenicplus's own
+`init_snakemake` command finds it with
+`files("scenicplus.snakemake").joinpath("Snakefile")`.
+
+`run_pipeline.sh` now asks the same question the upstream code does — resolving
+from the installed package via `importlib.resources`, with `--snakefile` still
+overriding. Verified across four cases: package present (resolves and proceeds),
+package absent (actionable message naming the import check, not a clone),
+explicit path (overrides), explicit but missing (still refuses).
+
+The same doubled path was also asserted in `config.template.yaml`'s provenance
+header; those are upstream-repository paths and are now labelled as such.
+
 ### `CXXABI_1.3.15 not found` — the smoke test's first real catch
 
 Seven of eleven stages failed at import with:
