@@ -137,7 +137,14 @@ output_data:
   # region_to_gene, AUCell_direct, AUCell_extended and scplus_mudata.
   # 02_pair/glue_metacells.py must have written the paired MuData HERE before
   # `snakemake` is invoked. Modalities must be exactly "scRNA" and "scATAC".
-  combined_GEX_ACC_mudata: "ACC_GEX.h5mu"
+  #
+  # ABSOLUTE, unlike every other output_data entry, and deliberately so: this is
+  # the only key that names a file which must ALREADY EXIST. The others are
+  # genuine outputs and belong wherever the run lands, so they stay relative and
+  # resolve against --directory. This one is a pre-built input, it lives at the
+  # repo root next to the pairing job that wrote it, and a relative value here
+  # resolved against the workdir (03_pipeline/) instead -- where it is not.
+  combined_GEX_ACC_mudata: "<ABS_PATH>/ACC_GEX.h5mu"
 
   # Motif enrichment results (hdf5 pickles of pycistarget result objects).
   dem_result_fname: "dem_results.hdf5"

@@ -514,8 +514,31 @@ info "as already satisfied, so neither prepare_GEX_ACC branch ever runs."
 echo ""
 
 if [[ ! -e "$H5MU_ABS" ]]; then
+    # Distinguish "the file does not exist" from "the config named it relative
+    # to the wrong base". The second is what actually happened once: the value
+    # was 'ACC_GEX.h5mu', snakemake resolves relative paths against --directory
+    # (03_pipeline/), and the object lives at the repo root -- so it looked
+    # absent while sitting one level up.
+    _hint=()
+    if [[ ! "$H5MU" = /* ]]; then
+        _alt="${REPO_ROOT}/${H5MU}"
+        if [[ -e "$_alt" ]]; then
+            _hint=(
+              ""
+              "FOUND IT one level up: $_alt"
+              "The config value '${H5MU}' is RELATIVE, and snakemake resolves"
+              "relative paths against --directory (${WORKDIR}) -- not the repo"
+              "root. Make this key ABSOLUTE in 03_pipeline/config.template.yaml:"
+              "    combined_GEX_ACC_mudata: \"<ABS_PATH>/${H5MU}\""
+              "then re-run 03_pipeline/make_config.sh. It is the one output_data"
+              "entry that names a PRE-EXISTING file, so it is the one that must"
+              "not float with the working directory."
+            )
+        fi
+    fi
     die "paired MuData not found at combined_GEX_ACC_mudata: $H5MU_ABS" \
         "(config value: '${H5MU}', resolved against workdir '${WORKDIR}')" \
+        "${_hint[@]}" \
         "" \
         "Run 02_pair/glue_metacells.py first and write its output to exactly that path." \
         "Without it, snakemake will try to RUN prepare_GEX_ACC -- which for" \

@@ -354,6 +354,32 @@ bash 03_pipeline/create_env.sh --repair-pins
 That force-reinstalls the pinned versions under constraint, reinstalls the git
 packages, repairs what `pip check` reports within the pins, and re-verifies.
 
+### `combined_GEX_ACC_mudata` must be ABSOLUTE — the third base mismatch
+
+Stages 1 and 2 passed; stage 3 failed with the paired object "not found" at
+`03_pipeline/ACC_GEX.h5mu` while it sat at the repo root. `make_config.sh` had
+reported the same key `[OK]`.
+
+Two validators, two resolution bases. `make_config.sh` resolved relative
+`output_data` paths against the **repo root**; snakemake resolves them against
+`--directory`, which `run_pipeline.sh` sets to `dirname(config)` =
+`03_pipeline/`. So the check passed against a base the run never uses.
+
+Proven on the real Snakefile with the object at the repo root and
+`--directory 03_pipeline`:
+
+| config value | snakemake |
+|---|---|
+| `"ACC_GEX.h5mu"` (relative) | `MissingInputException` — and it tries to **rebuild** the paired object |
+| `"<ABS_PATH>/ACC_GEX.h5mu"` | 13 jobs, `prepare_GEX_ACC` absent |
+
+The relative form is not merely a failed lookup: it puts the run one step from
+regenerating GLUE-paired metacells as randomly-paired ones. Three fixes:
+
+1. the key is now absolute in the template — it is the **one** `output_data` entry naming a file that must already exist, so it must not float with the working directory, while the other fourteen are genuine outputs and stay relative by design;
+2. `make_config.sh` now resolves `output_data` against snakemake's workdir, so it cannot certify a path the run resolves elsewhere — verified it now reports `MISS` for the relative form and `OK` for the absolute one, matching snakemake in both;
+3. `run_pipeline.sh` distinguishes "absent" from "wrong base": if the value is relative and the file exists one level up, it says so and prints the fix. Verified it stays silent when the file is genuinely missing.
+
 ### The absent cisTopic object is a safety guard, not a gap
 
 The second submission died on `run_pipeline.sh` demanding

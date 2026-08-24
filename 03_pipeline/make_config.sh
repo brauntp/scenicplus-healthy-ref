@@ -152,7 +152,13 @@ fi
 # Validate: does every referenced path exist? prepare_GEX_ACC's two inputs are
 # exempt -- absent is correct there, and PRESENT is what gets flagged.
 # --------------------------------------------------------------------------- #
-python3 - "$RENDERED" "$REPO_ROOT" "$PAIRED" <<'PY'
+# Pass the SNAKEMAKE WORKDIR as well as the repo root. run_pipeline.sh invokes
+# snakemake with --directory "$(dirname "$CONFIG")", so relative output_data
+# paths resolve against 03_pipeline/ -- NOT the repo root. Validating them
+# against the repo root reported a file present that snakemake would then look
+# for somewhere else, which is exactly how the third submission failed.
+SM_WORKDIR="$(python3 -c 'import os,sys; print(os.path.dirname(os.path.abspath(sys.argv[1])))' "$OUT")"
+python3 - "$RENDERED" "$REPO_ROOT" "$PAIRED" "$SM_WORKDIR" <<'PY'
 import os, sys
 try:
     import yaml
@@ -171,6 +177,10 @@ except ImportError:
              "snakemake.")
 
 rendered, root, paired = sys.argv[1], sys.argv[2], sys.argv[3]
+# Snakemake's --directory. input_data paths are absolute in the template so the
+# base does not matter for them; output_data paths are relative BY DESIGN and
+# resolve here, so this is the only correct base for them.
+sm_workdir = sys.argv[4]
 cfg = yaml.safe_load(open(rendered))
 inp = cfg.get("input_data", {})
 out = cfg.get("output_data", {})
@@ -200,7 +210,7 @@ if multi is None:
 # branch (both variants declare the same inputs).
 _mu = out.get("combined_GEX_ACC_mudata")
 _mu_abs = (_mu if (_mu and os.path.isabs(_mu))
-           else (os.path.join(root, _mu) if _mu else None))
+           else (os.path.join(sm_workdir, _mu) if _mu else None))
 MUDATA_PRESENT = bool(_mu_abs and os.path.exists(_mu_abs))
 if not MUDATA_PRESENT:
     # No paired object, so prepare_GEX_ACC IS in the DAG and genuinely reads
@@ -246,7 +256,8 @@ for k, v in inp.items():
 # The paired object is named relative to the working directory in output_data.
 mu = out.get("combined_GEX_ACC_mudata")
 if mu:
-    cand = mu if os.path.isabs(mu) else os.path.join(root, mu)
+    # sm_workdir, not root: this is where snakemake will look.
+    cand = mu if os.path.isabs(mu) else os.path.join(sm_workdir, mu)
     ok = os.path.exists(cand)
     print(f"  [{'OK   ' if ok else 'MISS '}] combined_GEX_ACC_mudata    {cand}")
     if not ok:
