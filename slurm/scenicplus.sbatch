@@ -74,11 +74,35 @@
 # object. An earlier projection said 96G on the assumption that .to_df()
 # copies; it does not -- the frame shares memory with X.
 #
-# This is a FLOOR: region_to_gene forks joblib workers that memory-map
-# per-worker slices from temp_dir, on top of the parent. If this OOMs, raise
-# --mem and lower --cpus-per-task together -- worker count scales with cores.
+# 54G was WRONG and OOM-killed the run at motif_enrichment_cistarget. That
+# figure came from the region_to_gene probe (43.2 GB measured, +25%) -- a
+# DIFFERENT rule. The header above says the database term is usually the binding
+# constraint, and then I sized the job to the other one.
+#
+# The database term, computed from what the code actually loads:
+#   pycistarget's cisTargetDatabase.load_db() with region_sets supplied calls
+#   db.load(subset), NOT load_full(), and ctxcore pushes the column list into
+#   pyarrow read_table(columns=...). So it reads only the database regions that
+#   MATCH our peaks -- not all 1.84M. Good news, but at our geometry the subset
+#   is still most of the file:
+#
+#     393,832 matched regions x 32,765 motifs x int32   = 48.1 GB
+#     subset_to_pandas builds a pyarrow Table then a DataFrame, both briefly
+#     live                                              = ~96 GB peak
+#
+#   (load_full() on the whole database would be ~224 GB. That path is not taken
+#   here, and the peak_overlap_audit showed near-total query-side matching, so
+#   assume most peaks match rather than hoping for a small subset.)
+#
+# --mem must cover the MAX of the two terms, not the sum: every DB-loading rule
+# declares threads = n_cpu, so at --cores 16 snakemake serialises
+# motif_enrichment_cistarget, motif_enrichment_dem, eGRN_direct and
+# eGRN_extended -- two of them are never resident together.
+#
+# 128G = the ~96 GB peak plus a third. If this still OOMs, the lever is
+# --cpus-per-task (fewer joblib workers in region_to_gene), not --mem alone.
 # See docs/MEMORY.md and 03_pipeline/probe_region_to_gene_memory.py.
-#SBATCH --mem=54G
+#SBATCH --mem=128G
 
 # --- walltime ----------------------------------------------------------------
 # region_to_gene and the two eGRN/GSEA rules dominate. With a few hundred

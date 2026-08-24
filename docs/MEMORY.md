@@ -25,6 +25,14 @@ The original 96G came from assuming there was — the same class of error as the
 QC overshoot, and the third time an assumed access pattern was the mistake
 rather than the arithmetic.
 
+> **Superseded for the pipeline job.** `--mem=54G` sizes *one* rule —
+> `region_to_gene` — and the pipeline OOM-killed at
+> `motif_enrichment_cistarget` instead, whose footprint is set by the cisTarget
+> database, not by the data. `slurm/scenicplus.sbatch` now requests **128G**.
+> The derivation below is still the right one for `region_to_gene` in
+> isolation; see "Two rules, two terms" at the end of this document for how they
+> combine.
+
 Set `--mem=54G`, not 96G. **One caveat that keeps this a floor:**
 `region_to_gene` forks joblib workers that memory-map per-worker slices from
 `temp_dir`. The parent's peak is what was measured; the workers add on top. If
@@ -179,3 +187,43 @@ variable, which must be exported **before** the call. If LDA dies with a Java
 Also set `tmp_path` to node-local scratch: Mallet writes a serialized corpus
 that is large for a 100k-cell object, and a shared filesystem makes topic
 modelling I/O-bound.
+
+
+## Two rules, two terms — and why the job needs the larger
+
+The 43.2 GB figure above is `region_to_gene`. It is not the binding constraint.
+
+**The database term.** `pycistarget`'s `cisTargetDatabase.load_db()` — with
+`region_sets` supplied, which the Snakefile always does — calls `db.load(subset)`
+rather than `load_full()`, and `ctxcore` pushes the column list down into
+`pyarrow.feather.read_table(columns=...)`. So it reads only the database regions
+that *match our peaks*, not all 1,837,304 of them. That is genuinely better than
+loading the whole file, but at this project's geometry the subset is still most
+of it:
+
+| term | figure |
+|---|---|
+| 393,832 matched regions × 32,765 motifs × int32 | 48.1 GB |
+| `subset_to_pandas` builds a pyarrow Table *then* a DataFrame, both briefly live | **~96 GB peak** |
+| (`load_full()` on the whole database, for reference — path not taken) | ~224 GB |
+
+The peak-overlap audit found near-total query-side matching, so assume most
+peaks match rather than hoping for a small subset.
+
+**They do not add.** Every database-loading rule declares
+`threads: config["params_general"]["n_cpu"]`, so at `--cores 16` snakemake
+serialises `motif_enrichment_cistarget`, `motif_enrichment_dem`, `eGRN_direct`
+and `eGRN_extended` — two are never resident at once. `--mem` must cover the
+**max** of the two terms, not the sum: ~96 GB, not ~140 GB.
+
+`slurm/scenicplus.sbatch` requests **128G**, the peak plus a third. If it still
+OOMs, the lever is `--cpus-per-task` — fewer joblib workers in `region_to_gene` —
+rather than `--mem` alone.
+
+**How this was missed:** the sbatch header already said the database term "is
+usually the binding constraint," and the run_pipeline triage already said
+"killed with no python traceback -> almost always SLURM OOM ... the cisTarget
+rankings DB is memory-resident; raise --mem." Both were correct. The `--mem`
+directive contradicted them because it was set from the one rule that had been
+measured, and a measured number for the wrong rule beat an unmeasured one for
+the right rule.

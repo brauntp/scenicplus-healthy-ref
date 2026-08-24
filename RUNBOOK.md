@@ -354,6 +354,68 @@ bash 03_pipeline/create_env.sh --repair-pins
 That force-reinstalls the pinned versions under constraint, reinstalls the git
 packages, repairs what `pip check` reports within the pins, and re-verifies.
 
+### The DAG ran: BioMart failed, and the job OOM-killed
+
+First submission that got past path validation. Two independent failures.
+
+**1. `download_genome_annotations` — not our bug.**
+
+```
+xml.etree.ElementTree.ParseError: mismatched tag: line 62, column 2
+```
+
+`pybiomart` asked `http://www.ensembl.org` for its dataset configuration and got
+malformed XML. BioMart returns HTML error pages and truncated responses under
+load, and `pybiomart` feeds the body straight to an XML parser. The rule then
+makes a *second* network chain — NCBI esearch plus an assembly report — to derive
+chromosome sizes. Two flaky services standing between a 24-hour job and its
+first computation, for two small static files.
+
+`03_pipeline/build_genome_annotation.py` builds them instead, from UCSC's API
+(one call per chromosome, whole-chromosome responses in under a second; Ensembl
+REST caps `/overlap/region` at 5 Mb, which would need ~620 paginated calls):
+
+```bash
+python 03_pipeline/build_genome_annotation.py --out-dir 03_pipeline \
+    --genome hg38 --check-against ACC_GEX.h5mu
+```
+
+46 s, 278,455 protein-coding transcripts over **19,723 genes** — right for
+GRCh38. Formats were read from the pinned source, not guessed, and verified:
+column names exact, `Strand` as `+`/`-` (not 1/−1), `Transcript_type` filtered to
+`protein_coding`, chromsizes `Start` all zero, and TSS = `Start` on `+` /
+`End` on `−` for every row. Once both TSVs exist the rule drops out of the DAG.
+
+`--check-against` exists because `get_search_space` matches genes with
+`gene_annotation.query("Gene in @scplus_genes")` — a plain intersection that
+returns **empty without erroring**. If the RNA object used Ensembl IDs the
+search space would be silently empty. Tested both namespaces: 100% match on
+symbols, 0% plus a warning on `ENSG…`.
+
+**2. OOM at `motif_enrichment_cistarget` — my sizing error.**
+
+`--mem=54G` came from the `region_to_gene` probe: 43.2 GB measured, +25%. That is
+a *different rule*. Reading what the code loads:
+
+| term | figure |
+|---|---|
+| 393,832 matched regions × 32,765 motifs × int32 | 48.1 GB |
+| pyarrow Table + DataFrame both briefly live | **~96 GB peak** |
+
+The good news is that `load_db()` calls `db.load(subset)`, not `load_full()`, and
+`ctxcore` pushes the column list into `read_table(columns=...)` — so it reads only
+database regions matching our peaks, not all 1.84M (~224 GB). But the audit found
+near-total matching, so the subset is most of the file.
+
+The two terms **do not add**: every DB-loading rule declares `threads: n_cpu`, so
+at `--cores 16` snakemake serialises them. `--mem` covers the max, now **128G**.
+
+Worth noting the sbatch header already said the database term "is usually the
+binding constraint" and the triage text already named this exact OOM. Both were
+right; the directive contradicted them because it was set from the rule that had
+been *measured*, and a measured number for the wrong rule beat an unmeasured one
+for the right rule.
+
 ### `combined_GEX_ACC_mudata` must be ABSOLUTE — the third base mismatch
 
 Stages 1 and 2 passed; stage 3 failed with the paired object "not found" at
