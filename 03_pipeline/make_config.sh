@@ -192,8 +192,19 @@ multi = cfg.get("params_data_preparation", {}).get("is_multiome")
 if multi is None:
     sys.exit("ERROR: params_data_preparation.is_multiome not found in the "
              "config -- cannot tell which inputs the DAG will open.")
-if not multi:
-    # The non-multiome branch runs prepare_GEX_ACC, which DOES read both.
+# Whether these two inputs are required depends on the paired mudata, NOT on
+# is_multiome. This condition previously read `if not multi`, which contradicted
+# the reasoning above: on the non-multiome branch it forced both keys back to
+# required even when the mudata was present -- and the measured dry run shows the
+# mudata's presence alone keeps prepare_GEX_ACC out of the DAG, under EITHER
+# branch (both variants declare the same inputs).
+_mu = out.get("combined_GEX_ACC_mudata")
+_mu_abs = (_mu if (_mu and os.path.isabs(_mu))
+           else (os.path.join(root, _mu) if _mu else None))
+MUDATA_PRESENT = bool(_mu_abs and os.path.exists(_mu_abs))
+if not MUDATA_PRESENT:
+    # No paired object, so prepare_GEX_ACC IS in the DAG and genuinely reads
+    # both files. They stop being guards and become required inputs.
     BRANCH_DEAD = set()
 
 fail = []
@@ -216,6 +227,13 @@ for k, v in inp.items():
     else:
         tag = "OK   " if exists else "MISS "
     print(f"  [{tag:<5}] {k:<26} {v}")
+    if (k in ("cisTopic_obj_fname", "GEX_anndata_fname")
+            and not MUDATA_PRESENT and not exists):
+        # Not a guard any more: without the paired object prepare_GEX_ACC is in
+        # the DAG and genuinely needs these. Say why, so the fix is obvious.
+        print("           ^ required because the paired MuData is MISSING, so"
+              " prepare_GEX_ACC would have to run. Build the paired object"
+              " first (02_pair/) rather than supplying these.")
     if k in BRANCH_DEAD:
         if exists:
             print(f"           ^ prepare_GEX_ACC input is PRESENT. Absent is safer:"

@@ -386,6 +386,17 @@ Both scripts now say so, and the check is inverted: absent reports `[guard]`,
 **present** is what gets flagged. Do not create placeholder files to satisfy a
 checker — that disarms the guard.
 
+The exemption is keyed to the **paired MuData's presence**, not to
+`is_multiome`. An earlier version of `make_config.sh` reset the exempt set with
+`if not multi`, which contradicted its own reasoning: on the non-multiome branch
+it forced both keys back to required even with the paired object present.
+Confirmed on the real Snakefile that this was wrong — with the mudata present,
+both settings plan the same 13 jobs and omit `prepare_GEX_ACC`. Verified across
+all four combinations of `is_multiome` × mudata presence; the two guard keys are
+exempt whenever the mudata exists and required whenever it does not, and when
+they *are* required the output says why (build the paired object rather than
+supplying them).
+
 ### The first pipeline submission died in one second
 
 `jobs/scenicplus-<id>.out` showed `started` and `finished` at the same
