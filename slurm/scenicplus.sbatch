@@ -162,6 +162,18 @@ CONDA_ENV="${CONDA_ENV:-scenicplus}"     # see 03_pipeline/environment.yml
 
 if [[ "${CONDA_DEFAULT_ENV:-}" == "$CONDA_ENV" ]]; then
     echo "using inherited conda env: $CONDA_DEFAULT_ENV"
+    # The activate.d hook fires on `conda activate`, so an INHERITED env brings
+    # LD_LIBRARY_PATH along only if it was set at submit time. Assert it rather
+    # than assume: without the env's own lib dir ahead of /lib64, the PyPI
+    # manylinux wheels (sorted-nearest, ncls, pyrle) load the system
+    # libstdc++, which is too old for their CXXABI, and every cisTarget/DEM
+    # and region-to-gene rule dies at import -- hours in, not here.
+    case ":${LD_LIBRARY_PATH:-}:" in
+        *":${CONDA_PREFIX}/lib:"*) ;;
+        *) export LD_LIBRARY_PATH="${CONDA_PREFIX}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+           echo "prepended \$CONDA_PREFIX/lib to LD_LIBRARY_PATH (inherited env" \
+                "did not carry it)" ;;
+    esac
 else
     CONDA_BASE="${CONDA_BASE:-/home/groups/MaxsonLab/braun/miniconda3}"
     if [[ -f "${CONDA_BASE}/etc/profile.d/conda.sh" ]]; then

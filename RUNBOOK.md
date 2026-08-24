@@ -393,6 +393,19 @@ system `/lib64` one, and that one is too old.
 section still solves at the same 234 packages on linux-64, and that conda-forge
 supplies libstdcxx 16.1.0 — well past the required ABI.
 
+**Having the library is necessary but not sufficient.** Installing
+`libstdcxx-ng` left the error byte-identical, and the reason is the dynamic
+linker's search order:
+
+| extension built by | RPATH | finds the env's libstdc++? |
+|---|---|---|
+| conda | `$ORIGIN/../../..` | yes, unaided |
+| PyPI manylinux wheel | none | no — falls through to `ld.so.cache`, then `/lib64` |
+
+The failing modules all reach PyPI-wheel extensions, so nothing points them at
+the env's own library. Prepending `$CONDA_PREFIX/lib` to `LD_LIBRARY_PATH` is
+the lever.
+
 **For an env that already exists**, don't rebuild:
 
 ```bash
@@ -400,13 +413,18 @@ conda activate scenicplus
 bash 03_pipeline/fix_cxxabi.sh     # seconds
 ```
 
-It reports the system and env ABI levels, installs the two packages, and
-re-imports the exact seven stages that failed. If they still fail, two causes
-remain and `03_pipeline/diagnose_cxxabi.sh` distinguishes them: the env has a
-new enough library but `$LD_LIBRARY_PATH` puts something ahead of it, or a wheel
-wants an ABI newer than conda-forge provides — in which case pinning that
-package to scenicplus's own `requirements.txt` version is both the fix and a
-step toward the upstream lock.
+It installs the packages if absent, then imports the seven affected modules
+**twice** — once as-is and once with `$CONDA_PREFIX/lib` prepended — and lets the
+result pick the diagnosis rather than assuming one:
+
+1. clean as-is: done, nothing further needed.
+2. clean only with the lib dir: it writes `etc/conda/activate.d/zzz_libstdcxx.sh` in the env, so the prepend fires on every `conda activate` **including inside a batch job**. An `export` typed in a login shell would not reach `sbatch`; the hook does. It is guarded against duplicating on repeated activation, since `LD_LIBRARY_PATH` is inherited by children.
+3. failing both ways: the search-path explanation is ruled out, so a wheel wants an ABI newer than conda-forge's libstdcxx provides — `03_pipeline/diagnose_cxxabi.sh` section 4 names the offending `.so` and its owning package, and section 5 shows it against scenicplus's lock. Pinning it to the lock version is then both the fix and a step toward the lock.
+
+`slurm/scenicplus.sbatch` carries the same guard independently, for the
+house-style path where the env is activated before `sbatch` and inherited: an
+inherited env brings `LD_LIBRARY_PATH` only if it was already set at submit
+time, so the job asserts it rather than assuming.
 
 This is exactly the failure class flagged in the section below: `sorted-nearest`
 is one of the 187 uncovered lock pins.
