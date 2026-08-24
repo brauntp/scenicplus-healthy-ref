@@ -50,8 +50,13 @@ except ImportError:                                              # pragma: no co
     sys.exit("ERROR: needs numpy")
 
 
-def refine(sig, eff, lo, hi, max_regions, step=0.01):
-    """Lowest threshold in [lo, hi] that caps no group and empties none.
+def refine(sig, eff, lo, hi, max_regions, min_usable, step=0.01):
+    """Lowest threshold in [lo, hi] that caps no group and STARVES none.
+
+    "Starves" is `< min_usable`, not `== 0`. An earlier version tested `> 0`,
+    which reported 2.49 as a clean answer on the real data while the smallest
+    group held 6,149 regions at that point but 7 regions at 3.00 -- the
+    exactly-zero test cannot see a set that is too small to score.
 
     The coarse grid overshoots: on a 0.5 step it reported 1.50 where 1.05 also
     worked, discarding regions for nothing. Both the grid path and the
@@ -61,7 +66,7 @@ def refine(sig, eff, lo, hi, max_regions, step=0.01):
     import numpy as _np
     for t in _np.arange(lo, hi + 1e-9, step):
         n = (sig & (eff >= t)).sum(1)
-        if n.min() > 0 and n.max() <= max_regions:
+        if n.min() >= min_usable and n.max() <= max_regions:
             return float(t), n
     return None, None
 
@@ -120,6 +125,38 @@ def main():
     print()
 
     sig = q <= args.fdr
+
+    if args.top_n is not None:
+        print()
+        print(f"  --top-n {args.top_n:,}: equal-sized sets, no shared threshold.")
+        n_avail = (sig.sum(1))
+        short = [(groups[i], int(n_avail[i]))
+                 for i in np.flatnonzero(n_avail < args.top_n)]
+        print(f"    groups with fewer than {args.top_n:,} FDR-passing regions: "
+              f"{len(short)}")
+        for g, n in short[:8]:
+            print(f"      {g:<26}{n:>8,}")
+        eff_at = np.array([np.sort(eff[i][sig[i]])[::-1][
+            min(args.top_n, int(n_avail[i])) - 1] if n_avail[i] else np.nan
+            for i in range(n_grp)])
+        print(f"    implied log2fc cutoff spans "
+              f"{np.nanmin(eff_at):.2f} to {np.nanmax(eff_at):.2f} across groups")
+        print("    -- that spread is the cost: a region admitted in one group "
+              "would be")
+        print("       rejected in another, so set membership is rank-based, not "
+              "effect-based.")
+
+        if not args.write:
+            print()
+            print("  (report only -- add --out-dir DIR --write to write the "
+                  "BEDs)")
+            print("=" * 78)
+            return
+        if args.out_dir is None:
+            sys.exit("ERROR: --write needs --out-dir")
+        _write_beds(args, groups, eff, sig, chrom, start, end)
+        return
+
     print(f"{'min_log2fc':>11}{'median/grp':>12}{'min':>9}{'max':>9}"
           f"{'capped':>8}{'starved':>9}{'total BED':>12}{'union % peaks':>15}")
     print("-" * 78)
@@ -150,11 +187,11 @@ def main():
         below = [x for x in args.grid if x < rec["min_log2fc"]]
         lo = max(below) if below else min(args.grid)
         t_ref, n_ref = refine(sig, eff, lo, rec["min_log2fc"],
-                              args.max_regions)
+                              args.max_regions, args.min_usable)
         if t_ref is not None and t_ref < rec["min_log2fc"] - 1e-9:
             union = (sig & (eff >= t_ref)).any(0).sum()
             head = 1 - n_ref.max() / args.max_regions
-            print(f"  FLOOR   {t_ref:.2f}  -- lowest that caps nothing: "
+            print(f"  FLOOR   {t_ref:.2f}  -- lowest that neither caps nor starves: "
                   f"median {int(np.median(n_ref)):,}/group, "
                   f"{int(n_ref.sum()):,} lines, union {union / n_reg:.1%}")
             if head < 0.10:
@@ -169,7 +206,7 @@ def main():
                   f" headroom.")
             rec = dict(min_log2fc=t_ref)
         else:
-            print(f"  lowest threshold with NO capped and NO empty group: "
+            print(f"  lowest threshold with NO capped and NO STARVED group: "
                   f"{rec['min_log2fc']:.2f}")
             print(f"    median {rec['median']:,} regions/group, "
                   f"{rec['total']:,} BED lines total, "
@@ -182,7 +219,7 @@ def main():
         # the dump is already in memory and each extra point costs a boolean
         # reduction, so there is no reason to make this a second invocation.
         print("  No grid point both clears the cap and keeps every group "
-              "non-empty -- extending automatically:")
+              "above --min-usable -- extending automatically:")
         t = max(args.grid)
         rec = None
         for _ in range(24):
@@ -190,14 +227,16 @@ def main():
             sel = sig & (eff >= t)
             n = sel.sum(1)
             n_cap = int((n > args.max_regions).sum())
-            n_zero = int((n == 0).sum())
+            # STARVED, not empty: `== 0` let 5.50 be reported as clean while
+            # the smallest group held 22 regions -- unscoreable by cisTarget.
+            n_zero = int((n < args.min_usable).sum())
             union = sel.any(0).sum()
             print(f"{t:>11.2f}{int(np.median(n)):>12,}{int(n.min()):>9,}"
                   f"{int(n.max()):>9,}{n_cap:>8}{n_zero:>6}"
                   f"{int(np.minimum(n, args.max_regions).sum()):>12,}"
                   f"{union / n_reg:>14.1%}")
             if n_cap == 0 and n_zero == 0:
-                t_ref, n_ref = refine(sig, eff, t - 0.5, t, args.max_regions)
+                t_ref, n_ref = refine(sig, eff, t - 0.5, t, args.max_regions, args.min_usable)
                 if t_ref is None:
                     t_ref, n_ref = float(t), n
                 un = (sig & (eff >= t_ref)).any(0).sum()
@@ -210,7 +249,7 @@ def main():
                 # Groups start emptying before the cap clears: the two
                 # conditions cannot both be met, which is a finding about the
                 # thin groups rather than a parameter to keep tuning.
-                empt = [groups[i] for i in np.flatnonzero(n == 0)]
+                empt = [groups[i] for i in np.flatnonzero(n < args.min_usable)]
                 print()
                 if n_cap == 0:
                     # Caps cleared at the same coarse step the thin group
@@ -222,19 +261,26 @@ def main():
                     # window where caps clear, and a satisfying threshold, if
                     # one exists, may sit under it.
                     lo, hi = min(args.grid), t
-                    hit, nf = refine(sig, eff, lo, hi, args.max_regions)
+                    hit, nf = refine(sig, eff, lo, hi, args.max_regions, args.min_usable)
                     if hit is not None:
                         print(f"  refined between {lo:.2f} and {hi:.2f} at 0.01:")
-                        print(f"  lowest threshold with NO capped and NO empty "
-                              f"group: {hit:.2f}")
+                        print(f"  lowest threshold with NO capped and NO "
+                              f"STARVED group: {hit:.2f}")
                         print(f"    median {int(np.median(nf)):,} regions/group, "
                               f"{int(nf.sum()):,} BED lines total")
-                        rec = dict(min_log2fc=hit)
+                        # Full dict: the caller prints rec['median'] and
+                        # rec['total'], and a bare {min_log2fc} crashed with
+                        # KeyError on the real data.
+                        rec = dict(min_log2fc=hit, median=int(np.median(nf)),
+                                   total=int(nf.sum()),
+                                   union_frac=float(
+                                       (sig & (eff >= hit)).any(0).sum() / n_reg))
                     else:
                         print(f"  NO threshold exists that satisfies both. "
                               f"Refined {lo:.2f}-{hi:.2f} at 0.01 resolution:")
-                        print(f"        {', '.join(empt[:5])} empt{'ies' if len(empt) == 1 else 'y'} "
-                              f"before the broad groups stop capping.")
+                        print(f"        {', '.join(empt[:5])} starve"
+                              f"{'s' if len(empt) == 1 else ''} before the broad "
+                              f"groups stop capping.")
                         print("        The two conditions are incompatible on "
                               "this data -- that is a")
                         print("        finding about the thin groups, not a "
@@ -247,20 +293,33 @@ def main():
                               "sizes are not comparable.")
                     break
                 else:
-                    print(f"  STOP: {n_zero} group(s) empty at {t:.2f} while "
+                    print(f"  STOP: {n_zero} group(s) fall below "
+                          f"--min-usable={args.min_usable:,} at {t:.2f} while "
                           f"{n_cap} group(s) still cap.")
-                    print(f"        emptied: {', '.join(empt[:5])}")
+                    print(f"        starved: {', '.join(empt[:5])}"
+                          + (f" (+{len(empt) - 5} more)" if len(empt) > 5 else ""))
                     print("        No single threshold serves every group: the "
                           "thin groups run out")
-                    print("        before the broad ones stop capping. Either "
-                          "accept the cap for the")
-                    print("        broad groups, or use a per-group threshold "
-                          "and record that the")
-                    print("        sets are not comparable in size.")
+                    print("        before the broad ones stop capping.")
+                    print()
+                    print("  RECOMMENDED: --top-n N, which sidesteps the shared "
+                          "threshold entirely.")
+                    print("    Every group gets N regions: none caps, none "
+                          "starves, and NES values")
+                    print("    become comparable across groups (a 20,000-region "
+                          "set and a 500-region")
+                    print("    set have very different null distributions). The "
+                          "binding constraint is")
+                    print(f"    the smallest FDR-passing count, "
+                          f"{int(sig.sum(1).min()):,} here.")
+                    print("    Cost: membership becomes rank-based, so a region "
+                          "admitted in one group")
+                    print("    would be rejected in another. Run --top-n N to "
+                          "see that span.")
                 break
         if rec:
             print()
-            print(f"  lowest threshold with NO capped and NO empty group: "
+            print(f"  lowest threshold with NO capped and NO STARVED group: "
                   f"{rec['min_log2fc']:.2f}")
             print(f"    median {rec['median']:,} regions/group, "
                   f"{rec['total']:,} BED lines total, "
@@ -271,26 +330,6 @@ def main():
                   "is wrong with")
             print("  the effect-size distribution -- inspect the dump directly "
                   "before proceeding.")
-
-    if args.top_n is not None:
-        print()
-        print(f"  --top-n {args.top_n:,}: equal-sized sets, no shared threshold.")
-        n_avail = (sig.sum(1))
-        short = [(groups[i], int(n_avail[i]))
-                 for i in np.flatnonzero(n_avail < args.top_n)]
-        print(f"    groups with fewer than {args.top_n:,} FDR-passing regions: "
-              f"{len(short)}")
-        for g, n in short[:8]:
-            print(f"      {g:<26}{n:>8,}")
-        eff_at = np.array([np.sort(eff[i][sig[i]])[::-1][
-            min(args.top_n, int(n_avail[i])) - 1] if n_avail[i] else np.nan
-            for i in range(n_grp)])
-        print(f"    implied log2fc cutoff spans "
-              f"{np.nanmin(eff_at):.2f} to {np.nanmax(eff_at):.2f} across groups")
-        print("    -- that spread is the cost: a region admitted in one group "
-              "would be")
-        print("       rejected in another, so set membership is rank-based, not "
-              "effect-based.")
 
     if not args.write:
         print()
@@ -304,6 +343,17 @@ def main():
     if args.min_log2fc is None and args.top_n is None:
         sys.exit("ERROR: --write needs either --min-log2fc T or --top-n N")
 
+    _write_beds(args, groups, eff, sig, chrom, start, end)
+
+
+def _write_beds(args, groups, eff, sig, chrom, start, end):
+    """Write one BED per group, by --top-n or by --min-log2fc.
+
+    Extracted so the --top-n path can reach it without first running the
+    threshold sweep: with --top-n given, every row of that sweep is about
+    a shared threshold that is not being used.
+    """
+    import numpy as np
     outdir = args.out_dir / args.family
     outdir.mkdir(parents=True, exist_ok=True)
     # Remove BEDs from the previous threshold: SCENIC+ globs the directory, so a
