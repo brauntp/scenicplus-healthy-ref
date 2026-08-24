@@ -269,11 +269,18 @@ def main() -> None:
           f"ctx_auc_threshold.")
     print("  Any rank_threshold at or above the floor still covers it.")
     print()
-    print("  What it DOES change: leading_edge4row compares each motif's curve")
-    print("  against avgrcc + 2*std over the FULL curve length, so a leading")
-    print("  edge beyond the truncation point cannot be found. Such a motif")
-    print("  would not have cleared the NES threshold anyway, since the AUC")
-    print("  only integrates the first rank_cutoff ranks.")
+    print("  What it DOES change, and this is more than cosmetic:")
+    print("    rank_at_max = argmax(rcc - avg2stdrcc) over the curve, and")
+    print("    leading_edge() returns every region ranked at or before it as a")
+    print("    MOTIF HIT. Those hits become the cistromes, which are the input")
+    print("    to prepare_menr and hence to eGRN construction. Truncating the")
+    print("    curve caps rank_at_max, so an enriched motif whose recovery")
+    print("    keeps climbing past the cut loses the hits beyond it -- smaller")
+    print("    cistromes, not just a different diagnostic.")
+    print()
+    print("    The motif CALLS (NES/AUC) are unaffected, so this does not")
+    print("    invent or lose regulons. It can shrink the region membership of")
+    print("    the ones it finds.")
     print()
 
     print("-- if the sets were equal-sized (--top-n) --------------------------")
@@ -325,10 +332,22 @@ def main() -> None:
     print(f"  There are {len(sizes)} region sets, so more than {len(sizes)} "
           f"workers buys nothing.")
     print()
-    print("  A note on which lever to reach for first: lowering")
-    print("  ctx_rank_threshold leaves NES/AUC and the enriched-motif calls")
-    print("  identical (see above), whereas cutting --cpus-per-task costs wall")
-    print("  time in this rule. Prefer the threshold.")
+    print("  WHICH LEVER FIRST: --cpus-per-task, not the threshold.")
+    print("  Fewer workers costs wall time in this rule and changes NOTHING")
+    print("  about the result. Lowering ctx_rank_threshold is cheaper in time")
+    print("  but can shrink cistrome membership (see above), and cistromes feed")
+    print("  eGRN construction. Reach for the threshold only if the wall time")
+    print("  at an acceptable worker count does not fit the walltime.")
+    print()
+    n_sets = len(sizes)
+    print(f"  Wave count at each worker level ({n_sets} region sets, run in")
+    print(f"  batches of --cpus-per-task):")
+    for c in args.cpus:
+        peak = rec_gb * c + (sum(n for _, n in sizes[:c]) * n_motifs
+                             * BYTES_PER_RANK / 1024**3 * TRANSIENT_FACTOR)
+        fits = "fits" if peak <= budget else "OOM"
+        print(f"    --cpus-per-task {c:>2}: {-(-n_sets // c):>2} waves, "
+              f"peak {human(peak):>9}  [{fits}]")
     print("=" * 74)
 
 

@@ -71,6 +71,13 @@ DRY_RUN=0
 UNLOCK=0
 VALIDATE_ONLY=0
 EXTRA_ARGS=()
+# Optional snakemake TARGETS. Empty means build everything (the default and the
+# normal case). Naming a target lets one memory-hungry rule run at a lower
+# concurrency than the rest of the DAG, which matters because --cores sets BOTH
+# snakemake's job scheduling AND params_general.n_cpu -- so lowering it to make
+# motif_enrichment_cistarget fit would also throttle tf_to_gene and the eGRN
+# rules, which are the expensive ones.
+TARGETS=()
 
 # --- argument parsing --------------------------------------------------------
 while [[ $# -gt 0 ]]; do
@@ -86,6 +93,8 @@ while [[ $# -gt 0 ]]; do
         -n|--dry-run|--dryrun) DRY_RUN=1; shift ;;
         --unlock)        UNLOCK=1; shift ;;
         --validate-only) VALIDATE_ONLY=1; shift ;;
+        --target)        TARGETS+=("${2:?--target requires a file}"); shift 2 ;;
+        --target=*)      TARGETS+=("${1#*=}"); shift ;;
         -h|--help)      sed -n '2,34p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
         --)             shift; EXTRA_ARGS+=("$@"); break ;;
         *)              die "unrecognised option: $1" \
@@ -707,7 +716,11 @@ fi
 printf '      snakemake'; printf ' %q' "${SNAKE_ARGS[@]}"; printf '\n\n'
 
 set +e
-snakemake "${SNAKE_ARGS[@]}"
+if (( ${#TARGETS[@]} )); then
+    echo "targets: ${TARGETS[*]}"
+    echo "  (a subset of the DAG -- the final-target check below is skipped)"
+fi
+snakemake "${SNAKE_ARGS[@]}" "${TARGETS[@]+"${TARGETS[@]}"}"
 rc=$?
 set -e
 
@@ -734,7 +747,22 @@ if [[ $rc -ne 0 ]]; then
     exit $rc
 fi
 
-if [[ "$DRY_RUN" -eq 0 ]]; then
+if [[ "$DRY_RUN" -eq 0 && ${#TARGETS[@]} -gt 0 ]]; then
+    # A subset build was requested, so the final target is not expected to
+    # exist. Report what the requested targets did produce instead, and do NOT
+    # die -- dying here would make a deliberately partial run look failed.
+    for _t in "${TARGETS[@]}"; do
+        _abs="$(abspath_in_workdir "$_t")"
+        if [[ -e "$_abs" ]]; then
+            ok "target written: $_abs ($(du -h "$_abs" | cut -f1))"
+        else
+            warn "requested target is missing after an exit-0 run: $_abs"
+        fi
+    done
+    echo ""
+    echo "Subset build complete. Resume the rest of the DAG with the normal"
+    echo "invocation (no --target), at whatever --cores the remaining rules want."
+elif [[ "$DRY_RUN" -eq 0 ]]; then
     if [[ -f "$FINAL_TARGET_ABS" ]]; then
         ok "final target written: $FINAL_TARGET_ABS ($(du -h "$FINAL_TARGET_ABS" | cut -f1))"
     else

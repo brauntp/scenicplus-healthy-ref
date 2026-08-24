@@ -157,7 +157,20 @@ cd "$REPO_ROOT" || exit 1
 # Default to what make_config.sh writes. Requiring the path as an argument made
 # job 10715268 die at submit-time-plus-queue-time on a usage error, for a file
 # whose location is already known.
-CONFIG="${1:-03_pipeline/config.yaml}"
+# $1 is the config path ONLY when it does not look like a flag. Otherwise every
+# argument is a pass-through and the config falls back to the default.
+#
+# Without this guard, `sbatch slurm/scenicplus.sbatch --target ctx_results.hdf5`
+# consumed "--target" as the config path and forwarded a bare "ctx_results.hdf5"
+# -- so the config was wrong AND the flag was lost, with no error until the
+# path check failed on a nonsense filename.
+if [[ -n "${1:-}" && "${1}" != -* ]]; then
+    CONFIG="$1"
+    PASSTHRU=("${@:2}")
+else
+    CONFIG="03_pipeline/config.yaml"
+    PASSTHRU=("$@")
+fi
 if [[ ! -f "$CONFIG" ]]; then
     echo "ERROR: config not found: $CONFIG" >&2
     echo "       Write it first:  bash 03_pipeline/make_config.sh" >&2
@@ -359,7 +372,7 @@ srun --cpu-bind=cores \
     03_pipeline/run_pipeline.sh \
         --config "$CONFIG" \
         --cores "$CORES" \
-        "${@:2}"
+        "${PASSTHRU[@]+"${PASSTHRU[@]}"}"
 RC=$?
 
 echo "==============================================================="

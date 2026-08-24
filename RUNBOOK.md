@@ -354,6 +354,49 @@ bash 03_pipeline/create_env.sh --repair-pins
 That force-reinstalls the pinned versions under constraint, reinstalls the git
 packages, repairs what `pip check` reports within the pins, and re-verifies.
 
+### Resuming after the cisTarget OOM — the actual steps
+
+Everything except cisTarget is banked: `region_to_gene_adj.tsv` (71 min of GBM),
+`dem_results.hdf5`, `search_space.tsv`, `genome_annotation.tsv`, `chromsizes.tsv`.
+A resume does not redo them.
+
+**Why not just lower `ctx_rank_threshold`.** It is the cheaper lever in wall
+time, but it is not free scientifically. `rank_at_max = argmax(rcc - avg2stdrcc)`
+is found over the curve, and `leading_edge()` returns every region ranked at or
+before it as a **motif hit** — which becomes the cistromes, which are the input
+to `prepare_menr` and hence eGRN construction. Truncating the curve caps
+`rank_at_max`, so an enriched motif whose recovery keeps climbing past the cut
+loses the hits beyond it. Motif *calls* (NES/AUC) are unaffected, so no regulon
+is invented or lost; the region membership of the ones found can shrink.
+
+**Why not just lower `--cpus-per-task` for the whole job.** `--cores` sets both
+snakemake's scheduling *and* `params_general.n_cpu`, so throttling it to make
+cisTarget fit would also throttle `tf_to_gene` and the two eGRN rules — the
+expensive ones remaining.
+
+**So: run cisTarget alone at low concurrency, then resume the rest at full.**
+
+```bash
+# 1. Confirm the sizing on your actual sets (seconds, no large file opened)
+python 03_pipeline/size_cistarget_memory.py --region-set-folder 01_atac/region_sets
+
+# 2. cisTarget only, 2 workers: peak ~92 GB, 11 sequential waves of 2 sets
+sbatch --cpus-per-task=2 --time=08:00:00 slurm/scenicplus.sbatch \
+    --target ctx_results.hdf5
+
+# 3. Then the rest of the DAG at full width
+sbatch slurm/scenicplus.sbatch
+```
+
+`--target` is a pass-through to snakemake, which builds only what the named
+target needs — verified: naming an intermediate leaves the downstream outputs
+untouched. On a subset build the final-target check is skipped, so a deliberately
+partial run does not report as failed.
+
+Nothing scientific changes on this route. `ctx_rank_threshold` stays at 0.05, and
+the only cost is wall time in one rule — comfortably inside the 24 h walltime,
+since both enrichment rules together took well under an hour at 16 workers.
+
 ### The cisTarget OOM: the recovery matrix, not the region sets
 
 Equal-N sets at 5,000 regions did not fix it, and the staleness check proved why
