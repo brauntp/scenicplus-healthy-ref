@@ -165,7 +165,7 @@ if (( REPAIR )); then
     fi
 
     PIPREQ="$(mktemp -t scplus-pip.XXXXXX)"
-    trap 'rm -f "$PIPREQ" "${PIPREQ}-pypi" "${PIPREQ}-gitreqs" "${PIPREQ}-cons"' EXIT
+    trap 'rm -f "$PIPREQ" "${PIPREQ}-pypi" "${PIPREQ}-gitreqs" "${PIPREQ}-cons" "${PIPREQ}-log1"' EXIT
     python3 - "$YML" "$PIPREQ" <<'PYEOF'
 import sys, yaml
 d = yaml.safe_load(open(sys.argv[1]))
@@ -178,9 +178,23 @@ PYEOF
 
     log "[1/3] forcing the pinned versions back (they are the spec)"
     export PIP_CONSTRAINT="${PIPREQ}-cons"
+    # --force-reinstall --no-deps on 34 packages is noisy and its outcome is
+    # what everything after depends on, so tee it and report the tail. On the
+    # first run this step's result was invisible: the log showed only the
+    # verification, which then reported 33 of 34 missing.
     "$PY" -m pip install --no-cache-dir --disable-pip-version-check \
-        --force-reinstall --no-deps -r "${PIPREQ}-pypi"
-    P1=$?
+        --force-reinstall --no-deps -r "${PIPREQ}-pypi" 2>&1 |
+        tee "${PIPREQ}-log1" | tail -3
+    P1=${PIPESTATUS[0]}
+    log "  step 1 exit ${P1}: $(grep -c '^Successfully installed' "${PIPREQ}-log1") \
+success line(s), $(grep -ci '^ERROR' "${PIPREQ}-log1") error line(s)"
+    if (( P1 != 0 )); then
+        echo "  first errors from step 1:"
+        grep -i "^ERROR" "${PIPREQ}-log1" | head -5 | sed 's/^/    /'
+        die "step 1 failed -- the pins were not restored, so nothing after this
+     is meaningful. Full log: ${PIPREQ}-log1 (kept for this run only;
+     re-run redirecting output to a file if you need to keep it)."
+    fi
 
     log "[2/3] reinstalling the git packages, --no-deps"
     "$PY" -m pip install --no-cache-dir --no-deps --disable-pip-version-check \
@@ -201,31 +215,7 @@ PYEOF
 
     echo
     log "re-verifying"
-    "$PY" - "$PIPREQ" <<'PYEOF'
-import subprocess, sys
-want = {}
-for line in open(sys.argv[1]):
-    line = line.strip()
-    if "==" in line and "git+" not in line:
-        n, v = line.split("==", 1)
-        want[n.strip().lower().replace("_", "-")] = v.strip()
-have = {}
-out = subprocess.run([sys.executable, "-m", "pip", "list", "--format=freeze",
-                      "--disable-pip-version-check"],
-                     capture_output=True, text=True).stdout
-for line in out.splitlines():
-    if "==" in line:
-        n, v = line.split("==", 1)
-        have[n.strip().lower().replace("_", "-")] = v.strip()
-drift = [(n, w, have.get(n, "MISSING")) for n, w in sorted(want.items())
-         if have.get(n) != w]
-if drift:
-    print(f"  STILL DRIFTED: {len(drift)} of {len(want)}")
-    for n, w, h in drift:
-        print(f"    {n:<22} spec {w:<16} installed {h}")
-    sys.exit(3)
-print(f"  all {len(want)} pinned versions match the spec")
-PYEOF
+    "$PY" 03_pipeline/_check_pins.py "$PIPREQ"
     D=$?
     for mod in pycisTopic pycistarget scenicplus loomxpy pyscenic; do
         "$PY" -c "import $mod" 2>/dev/null && echo "  ok      import ${mod}" ||
@@ -462,34 +452,7 @@ fi
 # packages' own metadata wants newer versions of several of these. Report drift
 # rather than assume it did not happen.
 log "verifying the pinned versions survived"
-"$PY" - "$PIPREQ" <<'PYEOF'
-import subprocess, sys, re
-want = {}
-for line in open(sys.argv[1]):
-    line = line.strip()
-    if "==" in line and "git+" not in line:
-        n, v = line.split("==", 1)
-        want[n.strip().lower().replace("_", "-")] = v.strip()
-have = {}
-out = subprocess.run([sys.executable, "-m", "pip", "list", "--format=freeze",
-                      "--disable-pip-version-check"],
-                     capture_output=True, text=True).stdout
-for line in out.splitlines():
-    if "==" in line:
-        n, v = line.split("==", 1)
-        have[n.strip().lower().replace("_", "-")] = v.strip()
-drift = [(n, w, have.get(n, "MISSING")) for n, w in sorted(want.items())
-         if have.get(n) != w]
-if drift:
-    print(f"  {len(drift)} of {len(want)} pinned versions differ from the spec:")
-    for n, w, h in drift:
-        print(f"    {n:<22} spec {w:<16} installed {h}")
-    print("  The env is NOT the pinned configuration. Repair with:")
-    print("    bash 03_pipeline/create_env.sh --repair-pins")
-    sys.exit(3)
-else:
-    print(f"  all {len(want)} pinned versions match the spec")
-PYEOF
+"$PY" 03_pipeline/_check_pins.py "$PIPREQ"
 DRIFT_RC=$?
 
 # The git packages install --no-deps, so nothing verifies they arrived. And the

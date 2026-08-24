@@ -354,6 +354,32 @@ bash 03_pipeline/create_env.sh --repair-pins
 That force-reinstalls the pinned versions under constraint, reinstalls the git
 packages, repairs what `pip check` reports within the pins, and re-verifies.
 
+### When the env's own reports contradict each other
+
+`--repair-pins` once reported **"STILL DRIFTED: 33 of 34 ... installed
+MISSING"** while, three lines later, all five git packages imported and the
+`scenicplus` console script existed. Both cannot be true — scenicplus imports
+pandas. So one report was wrong, and the answer is to ask the environment
+directly rather than reason about it:
+
+```bash
+conda activate scenicplus
+bash 03_pipeline/diagnose_env.sh      # read-only, seconds
+```
+
+It reports three things the flat "MISSING" list conflated:
+
+1. **How many distributions each mechanism sees** — `importlib.metadata` versus `pip list`. Wildly different counts mean the query is broken, not the env. An interrupted `--force-reinstall` can leave partially-written `.dist-info` directories that one reader tolerates and another does not.
+2. **Whether each package imports**, with its `__version__`.
+3. **ABSENT versus DIFFERS per pin** — a distinction the repair's single "MISSING" label erased. A package that *imports* but reports ABSENT means damaged metadata: the code is present, the `.dist-info` is not.
+
+The pin checker itself now queries `importlib.metadata` (the mechanism `import`
+uses) rather than parsing `pip list`, and refuses to report a near-empty result
+as "34 missing packages" — under 20 visible distributions in an env like this
+one is a failed query, and it says so instead. Repair step 1's exit code and
+error lines are also surfaced now; on the first run its outcome was invisible,
+so a failure there was only inferable from the verification that followed.
+
 ### Why stage 4 needs `--no-deps`
 
 Resolving the git group normally fails outright:
