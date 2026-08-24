@@ -175,9 +175,15 @@ else
                 echo "       with source builds -- allow an hour or more, and" >&2
                 echo "       run it under screen/tmux, not a bare login shell:" >&2
                 echo >&2
-                echo "         bash 03_pipeline/preflight_env.sh   # validates the spec first" >&2
                 echo "         screen -S spenv" >&2
-                echo "         mamba env create -f 03_pipeline/environment.yml" >&2
+                echo "         bash 03_pipeline/create_env.sh" >&2
+                echo >&2
+                echo "       Use create_env.sh, NOT mamba env create directly:" >&2
+                echo "       it exports PIP_CONSTRAINT so pip's isolated build" >&2
+                echo "       env gets setuptools<81. Without that the build" >&2
+                echo "       dies on pybedtools AFTER the conda solve, because" >&2
+                echo "       setuptools 84 dropped pkg_resources. The wrapper" >&2
+                echo "       runs preflight_env.sh first." >&2
                 echo >&2
                 echo "       preflight_env.sh checks the platform, solver," >&2
                 echo "       python pin, pandas placement, git pins and disk" >&2

@@ -1,0 +1,12 @@
+# Constraints applied to pip's ISOLATED BUILD environment, via PIP_CONSTRAINT
+# exported by 03_pipeline/create_env.sh. These are NOT runtime pins -- they
+# bound the tools pip uses to build sdists that ship no pyproject.toml.
+#
+# setuptools 84.0.0 (2026-08-08) removed the bundled pkg_resources module.
+# pybedtools 0.9.1's setup.py does `import pkg_resources` and exits with
+# "setuptools was not found" when it fails. pyranges 0.0.111 and tspex 0.6.3
+# ship no pyproject.toml either, so they are exposed to the same break.
+#
+# Verified 2026-08-24: with this bound, pybedtools 0.9.1, pyranges 0.0.111,
+# tspex 0.6.3, pyrle 0.0.39 and MACS2 2.2.9.1 all build from source cleanly.
+setuptools<81

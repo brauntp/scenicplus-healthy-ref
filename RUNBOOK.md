@@ -259,12 +259,43 @@ Job 10715336 failed with `EnvironmentNameNotFound: scenicplus` -- the env was
 never built. The config check passed, so this is the only thing missing.
 
 ```bash
-bash 03_pipeline/preflight_env.sh          # seconds; validates the spec
 screen -S spenv                           # NOT a bare login shell
-mamba env create -f 03_pipeline/environment.yml
+bash 03_pipeline/create_env.sh            # runs the preflight, then builds
 conda activate scenicplus
 scenicplus --help                          # smoke test
 ```
+
+**Use `create_env.sh`, not `mamba env create` directly.** A direct
+`mamba env create` fails on this spec today, and fails *after* the 234-package
+conda solve has already succeeded:
+
+```
+pybedtools uses setuptools (...) for installation but setuptools was not found
+CondaEnvException: Pip failed
+```
+
+The cause is neither pybedtools nor this env file. setuptools 84.0.0
+(2026-08-08) removed the bundled `pkg_resources`; pybedtools 0.9.1's `setup.py`
+opens with `import pkg_resources` and exits with that message when it fails.
+Because the 0.9.1 sdist ships no `pyproject.toml`, pip synthesizes an
+*unbounded* `setuptools>=40.8.0` build requirement, so the isolated build
+environment gets the newest one.
+
+Measured, not assumed:
+
+| | |
+|---|---|
+| setuptools 84.0.0 | `ModuleNotFoundError: pkg_resources` |
+| setuptools 80.9.0 | imports (deprecation warning) |
+| setuptools pinned in the **conda** section | **does not help** — build isolation ignores the target env |
+| `PIP_CONSTRAINT=setuptools<81` | pybedtools, pyranges, tspex, pyrle and MACS2 all build |
+
+Three of the five source-built sdists carry no `pyproject.toml` (pybedtools,
+pyranges, tspex), so all three are exposed to the same break — pybedtools is
+just the one pip reached first. The constraint cannot live in the env file:
+`--no-build-isolation` is rejected inside a requirements file and a conda env
+file has nowhere to put a pip constraint. Hence the wrapper, which exports
+`PIP_CONSTRAINT` from `03_pipeline/pip-build-constraints.txt`.
 
 Allow an hour or more: 234 conda packages (513 MB) plus 39 pip requirements,
 five of which build from source at pinned git refs.

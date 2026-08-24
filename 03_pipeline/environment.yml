@@ -2,7 +2,14 @@
 # Conda environment for SCENIC+ v1.0a2 (+ pycisTopic, pycistarget)
 # =============================================================================
 # Create:
-#     mamba env create -f 03_pipeline/environment.yml
+#     bash 03_pipeline/create_env.sh
+#
+# DO NOT run `mamba env create -f` on this file directly. It fails on
+# pybedtools AFTER the conda solve succeeds: setuptools 84 (2026-08-08)
+# removed pkg_resources, pybedtools 0.9.1's setup.py imports it, and the
+# 0.9.1 sdist has no pyproject.toml so pip's isolated build env installs
+# the newest setuptools. create_env.sh exports PIP_CONSTRAINT to bound it;
+# a conda env file has nowhere to put a pip build constraint.
 #     conda activate scenicplus
 #     scenicplus --help          # smoke test: must print the CLI usage
 #     python -c "import pycisTopic, pycistarget, scenicplus; print('ok')"
