@@ -54,9 +54,13 @@ def refine(sig, eff, lo, hi, max_regions, min_usable, step=0.01):
     """Lowest threshold in [lo, hi] that caps no group and STARVES none.
 
     "Starves" is `< min_usable`, not `== 0`. An earlier version tested `> 0`,
-    which reported 2.49 as a clean answer on the real data while the smallest
-    group held 6,149 regions at that point but 7 regions at 3.00 -- the
-    exactly-zero test cannot see a set that is too small to score.
+    which reported 2.49 as a clean answer on the real data. The bracketing grid
+    rows give min-per-group 473 at t=2.00 and 7 at t=3.00, and counts fall
+    monotonically with t, so the smallest set at 2.49 held somewhere between 7
+    and 473 regions -- far below the ~2,000 cisTarget needs to score one. The
+    exactly-zero test cannot see that: a 7-region set passes `> 0`.
+    (The tool printed "median 6,149 regions/group" at 2.49; that is the median
+    across groups, not the minimum. The minimum at 2.49 was never printed.)
 
     The coarse grid overshoots: on a 0.5 step it reported 1.50 where 1.05 also
     worked, discarding regions for nothing. Both the grid path and the
@@ -191,25 +195,33 @@ def main():
         if t_ref is not None and t_ref < rec["min_log2fc"] - 1e-9:
             union = (sig & (eff >= t_ref)).any(0).sum()
             head = 1 - n_ref.max() / args.max_regions
-            print(f"  FLOOR   {t_ref:.2f}  -- lowest that neither caps nor starves: "
-                  f"median {int(np.median(n_ref)):,}/group, "
-                  f"{int(n_ref.sum()):,} lines, union {union / n_reg:.1%}")
+            print(f"  FLOOR   {t_ref:.2f}  -- lowest that neither caps nor "
+                  f"starves:")
+            print(f"          min {int(n_ref.min()):,} / median "
+                  f"{int(np.median(n_ref)):,} / max {int(n_ref.max()):,} per "
+                  f"group, {int(n_ref.sum()):,} lines, union "
+                  f"{union / n_reg:.1%}")
             if head < 0.10:
                 print(f"          but the largest group is {head:.0%} from the "
                       f"cap, so this is the")
                 print(f"          boundary, not a safe operating point.")
             print(f"  Pick from the table above by what the region sets should "
                   f"MEAN, not by")
-            print(f"  the floor: {rec['min_log2fc']:.2f} gives "
-                  f"{rec['median']:,}/group with "
-                  f"{1 - max(r['max'] for r in table if r['min_log2fc'] == rec['min_log2fc']) / args.max_regions:.0%}"
-                  f" headroom.")
-            rec = dict(min_log2fc=t_ref)
+            _r = next(r for r in table
+                      if r["min_log2fc"] == rec["min_log2fc"])
+            print(f"  the floor: {rec['min_log2fc']:.2f} gives min {_r['min']:,} "
+                  f"/ median {_r['median']:,} per group, "
+                  f"{1 - _r['max'] / args.max_regions:.0%} headroom.")
+            rec = dict(min_log2fc=float(t_ref), min=int(n_ref.min()),
+                       median=int(np.median(n_ref)), max=int(n_ref.max()),
+                       total=int(n_ref.sum()),
+                       union_frac=float(union / n_reg))
         else:
             print(f"  lowest threshold with NO capped and NO STARVED group: "
                   f"{rec['min_log2fc']:.2f}")
-            print(f"    median {rec['median']:,} regions/group, "
-                  f"{rec['total']:,} BED lines total, "
+            print(f"    min {rec.get('min', '?'):,} / median "
+                  f"{rec['median']:,} regions per group, "
+                  f"{rec['total']:,} BED lines, "
                   f"union {rec['union_frac']:.1%} of peaks")
         print("  Lower keeps more marginal regions but lets the cap choose; "
               "higher is")
@@ -242,6 +254,7 @@ def main():
                 un = (sig & (eff >= t_ref)).any(0).sum()
                 rec = dict(min_log2fc=float(t_ref),
                            median=int(np.median(n_ref)),
+                           min=int(n_ref.min()),
                            total=int(np.minimum(n_ref, args.max_regions).sum()),
                            union_frac=float(un / n_reg))
                 break
@@ -266,12 +279,14 @@ def main():
                         print(f"  refined between {lo:.2f} and {hi:.2f} at 0.01:")
                         print(f"  lowest threshold with NO capped and NO "
                               f"STARVED group: {hit:.2f}")
-                        print(f"    median {int(np.median(nf)):,} regions/group, "
-                              f"{int(nf.sum()):,} BED lines total")
+                        print(f"    min {int(nf.min()):,} / median "
+                              f"{int(np.median(nf)):,} / max {int(nf.max()):,} "
+                              f"regions per group, {int(nf.sum()):,} BED lines")
                         # Full dict: the caller prints rec['median'] and
                         # rec['total'], and a bare {min_log2fc} crashed with
                         # KeyError on the real data.
                         rec = dict(min_log2fc=hit, median=int(np.median(nf)),
+                                   min=int(nf.min()),
                                    total=int(nf.sum()),
                                    union_frac=float(
                                        (sig & (eff >= hit)).any(0).sum() / n_reg))
@@ -321,8 +336,9 @@ def main():
             print()
             print(f"  lowest threshold with NO capped and NO STARVED group: "
                   f"{rec['min_log2fc']:.2f}")
-            print(f"    median {rec['median']:,} regions/group, "
-                  f"{rec['total']:,} BED lines total, "
+            print(f"    min {rec.get('min', '?'):,} / median "
+                  f"{rec['median']:,} regions per group, "
+                  f"{rec['total']:,} BED lines, "
                   f"union {rec['union_frac']:.1%} of peaks")
         elif rec is None and t >= max(args.grid) + 12:
             print()
