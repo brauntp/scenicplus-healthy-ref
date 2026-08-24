@@ -50,6 +50,22 @@ except ImportError:                                              # pragma: no co
     sys.exit("ERROR: needs numpy")
 
 
+def refine(sig, eff, lo, hi, max_regions, step=0.01):
+    """Lowest threshold in [lo, hi] that caps no group and empties none.
+
+    The coarse grid overshoots: on a 0.5 step it reported 1.50 where 1.05 also
+    worked, discarding regions for nothing. Both the grid path and the
+    auto-extend path refine through here so the reported threshold is the real
+    minimum, not the first grid point that happened to clear.
+    """
+    import numpy as _np
+    for t in _np.arange(lo, hi + 1e-9, step):
+        n = (sig & (eff >= t)).sum(1)
+        if n.min() > 0 and n.max() <= max_regions:
+            return float(t), n
+    return None, None
+
+
 def main():
     ap = argparse.ArgumentParser(
         description=__doc__,
@@ -113,19 +129,132 @@ def main():
     clean = [r for r in table if r["n_capped"] == 0 and r["n_zero"] == 0]
     if clean:
         rec = clean[0]
-        print(f"  lowest threshold with NO capped and NO empty group: "
-              f"{rec['min_log2fc']:.2f}")
-        print(f"    median {rec['median']:,} regions/group, "
-              f"{rec['total']:,} BED lines total, "
-              f"union {rec['union_frac']:.1%} of peaks")
+        # The grid point that cleared is an upper bound, not the answer: refine
+        # down to the true minimum so no regions are discarded for nothing.
+        below = [x for x in args.grid if x < rec["min_log2fc"]]
+        lo = max(below) if below else min(args.grid)
+        t_ref, n_ref = refine(sig, eff, lo, rec["min_log2fc"],
+                              args.max_regions)
+        if t_ref is not None and t_ref < rec["min_log2fc"] - 1e-9:
+            union = (sig & (eff >= t_ref)).any(0).sum()
+            head = 1 - n_ref.max() / args.max_regions
+            print(f"  FLOOR   {t_ref:.2f}  -- lowest that caps nothing: "
+                  f"median {int(np.median(n_ref)):,}/group, "
+                  f"{int(n_ref.sum()):,} lines, union {union / n_reg:.1%}")
+            if head < 0.10:
+                print(f"          but the largest group is {head:.0%} from the "
+                      f"cap, so this is the")
+                print(f"          boundary, not a safe operating point.")
+            print(f"  Pick from the table above by what the region sets should "
+                  f"MEAN, not by")
+            print(f"  the floor: {rec['min_log2fc']:.2f} gives "
+                  f"{rec['median']:,}/group with "
+                  f"{1 - max(r['max'] for r in table if r['min_log2fc'] == rec['min_log2fc']) / args.max_regions:.0%}"
+                  f" headroom.")
+            rec = dict(min_log2fc=t_ref)
+        else:
+            print(f"  lowest threshold with NO capped and NO empty group: "
+                  f"{rec['min_log2fc']:.2f}")
+            print(f"    median {rec['median']:,} regions/group, "
+                  f"{rec['total']:,} BED lines total, "
+                  f"union {rec['union_frac']:.1%} of peaks")
         print("  Lower keeps more marginal regions but lets the cap choose; "
               "higher is")
         print("  stricter but starves the thinner groups first.")
     else:
-        print("  NO threshold in the grid both clears the cap and keeps every "
-              "group non-empty.")
-        print("  Widen --grid, or accept that some groups cannot support a "
-              "region set.")
+        # Auto-extend rather than telling the user to re-run with a wider grid:
+        # the dump is already in memory and each extra point costs a boolean
+        # reduction, so there is no reason to make this a second invocation.
+        print("  No grid point both clears the cap and keeps every group "
+              "non-empty -- extending automatically:")
+        t = max(args.grid)
+        rec = None
+        for _ in range(24):
+            t += 0.5
+            sel = sig & (eff >= t)
+            n = sel.sum(1)
+            n_cap = int((n > args.max_regions).sum())
+            n_zero = int((n == 0).sum())
+            union = sel.any(0).sum()
+            print(f"{t:>11.2f}{int(np.median(n)):>12,}{int(n.min()):>9,}"
+                  f"{int(n.max()):>9,}{n_cap:>8}{n_zero:>6}"
+                  f"{int(np.minimum(n, args.max_regions).sum()):>12,}"
+                  f"{union / n_reg:>14.1%}")
+            if n_cap == 0 and n_zero == 0:
+                t_ref, n_ref = refine(sig, eff, t - 0.5, t, args.max_regions)
+                if t_ref is None:
+                    t_ref, n_ref = float(t), n
+                un = (sig & (eff >= t_ref)).any(0).sum()
+                rec = dict(min_log2fc=float(t_ref),
+                           median=int(np.median(n_ref)),
+                           total=int(np.minimum(n_ref, args.max_regions).sum()),
+                           union_frac=float(un / n_reg))
+                break
+            if n_zero > 0:
+                # Groups start emptying before the cap clears: the two
+                # conditions cannot both be met, which is a finding about the
+                # thin groups rather than a parameter to keep tuning.
+                empt = [groups[i] for i in np.flatnonzero(n == 0)]
+                print()
+                if n_cap == 0:
+                    # Caps cleared at the same coarse step the thin group
+                    # emptied. Do NOT tell the user to retry at a finer step
+                    # without checking one exists -- refine here and report
+                    # whichever way it comes out.
+                    # Search from the LOWEST grid point upward, not just the
+                    # last coarse step: the starving group can empty below the
+                    # window where caps clear, and a satisfying threshold, if
+                    # one exists, may sit under it.
+                    lo, hi = min(args.grid), t
+                    hit, nf = refine(sig, eff, lo, hi, args.max_regions)
+                    if hit is not None:
+                        print(f"  refined between {lo:.2f} and {hi:.2f} at 0.01:")
+                        print(f"  lowest threshold with NO capped and NO empty "
+                              f"group: {hit:.2f}")
+                        print(f"    median {int(np.median(nf)):,} regions/group, "
+                              f"{int(nf.sum()):,} BED lines total")
+                        rec = dict(min_log2fc=hit)
+                    else:
+                        print(f"  NO threshold exists that satisfies both. "
+                              f"Refined {lo:.2f}-{hi:.2f} at 0.01 resolution:")
+                        print(f"        {', '.join(empt[:5])} empt{'ies' if len(empt) == 1 else 'y'} "
+                              f"before the broad groups stop capping.")
+                        print("        The two conditions are incompatible on "
+                              "this data -- that is a")
+                        print("        finding about the thin groups, not a "
+                              "parameter to keep tuning.")
+                        print("        Options: accept the cap for the broad "
+                              "groups (their sets are")
+                        print("        top-N slices), drop the starving groups "
+                          "via --min-independent, or")
+                        print("        use per-group thresholds and record that "
+                              "sizes are not comparable.")
+                    break
+                else:
+                    print(f"  STOP: {n_zero} group(s) empty at {t:.2f} while "
+                          f"{n_cap} group(s) still cap.")
+                    print(f"        emptied: {', '.join(empt[:5])}")
+                    print("        No single threshold serves every group: the "
+                          "thin groups run out")
+                    print("        before the broad ones stop capping. Either "
+                          "accept the cap for the")
+                    print("        broad groups, or use a per-group threshold "
+                          "and record that the")
+                    print("        sets are not comparable in size.")
+                break
+        if rec:
+            print()
+            print(f"  lowest threshold with NO capped and NO empty group: "
+                  f"{rec['min_log2fc']:.2f}")
+            print(f"    median {rec['median']:,} regions/group, "
+                  f"{rec['total']:,} BED lines total, "
+                  f"union {rec['union_frac']:.1%} of peaks")
+        elif rec is None and t >= max(args.grid) + 12:
+            print()
+            print("  Extended to +12 log2fc without clearing the cap. Something "
+                  "is wrong with")
+            print("  the effect-size distribution -- inspect the dump directly "
+                  "before proceeding.")
 
     if not args.write:
         print()
