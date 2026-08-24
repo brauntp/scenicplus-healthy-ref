@@ -123,9 +123,16 @@ def last_failure(workdir: Path) -> dict | None:
 
 
 
-def stale_against_region_sets(cfg: dict, workdir: Path,
-                              resolve) -> list[tuple[str, str, float, float]]:
+def stale_against_region_sets(cfg: dict, workdir: Path, resolve) -> dict:
     """Outputs older than the newest .bed in the region-set folder.
+
+    Returns a dict with an explicit STATUS, not a bare list. The first version
+    returned [] for three different situations -- no config key, no folder on
+    disk, and genuinely-clean -- and printed the same reassuring line for all
+    three. A check that says "clean" when it could not run is worse than no
+    check, and this repo has already been bitten by that exact shape (the
+    `micromamba env list` probe that reported no environments when the listing
+    itself failed).
 
     THE HAZARD THIS CATCHES. Both motif-enrichment rules declare the region-set
     FOLDER as their input:
@@ -148,25 +155,30 @@ def stale_against_region_sets(cfg: dict, workdir: Path,
     """
     folder = cfg.get("input_data", {}).get("region_set_folder")
     if not folder:
-        return []
+        return {"status": "no_key",
+                "detail": "input_data.region_set_folder is not in the config"}
     fp = Path(folder)
     if not fp.is_absolute():
         fp = workdir / fp
+    if not fp.is_dir():
+        return {"status": "no_folder", "detail": str(fp)}
     beds = list(fp.rglob("*.bed"))
     if not beds:
-        return []
+        return {"status": "no_beds", "detail": str(fp)}
+
     newest = max(b.stat().st_mtime for b in beds)
+    oldest = min(b.stat().st_mtime for b in beds)
     stale = []
     # Every output at or downstream of motif enrichment depends on the sets.
-    downstream = [k for _, keys in STAGES[1:] for k in keys]
-    for k in downstream:
+    for k in (k for _, keys in STAGES[1:] for k in keys):
         q = resolve(k)
         if q is None or not q.exists():
             continue
         m = q.stat().st_mtime
         if m < newest:
             stale.append((k, q.name, m, newest))
-    return stale
+    return {"status": "checked", "folder": str(fp), "n_beds": len(beds),
+            "newest": newest, "oldest": oldest, "stale": stale}
 
 
 def main() -> None:
@@ -303,14 +315,32 @@ def main() -> None:
     print()
 
     print("-- staleness against the region sets -------------------------------")
-    stale = stale_against_region_sets(cfg, workdir, resolve)
-    if not stale:
-        print("  no output is older than the newest .bed in the region-set")
-        print("  folder. (If the folder is absent this check is skipped.)")
+    res = stale_against_region_sets(cfg, workdir, resolve)
+    st = res["status"]
+    if st == "no_key":
+        print(f"  NOT CHECKED: {res['detail']}.")
+        print("  Cannot tell whether the outputs match the region sets.")
+    elif st == "no_folder":
+        print(f"  NOT CHECKED: region-set folder does not exist:")
+        print(f"    {res['detail']}")
+        print("  sbatch slurm/region_sets.sbatch writes it.")
+    elif st == "no_beds":
+        print(f"  NOT CHECKED: no .bed files under {res['detail']}")
+        print("  cisTarget globs <folder>/<family>/*.bed, so the DAG would fail")
+        print("  here too.")
+    elif not res["stale"]:
+        print(f"  CHECKED: {res['n_beds']} .bed files under {res['folder']}")
+        print(f"    newest written {age(res['newest'])}, "
+              f"oldest {age(res['oldest'])}")
+        print("  Every existing output is NEWER than the newest .bed, so none")
+        print("  was computed from a superseded region-set definition.")
     else:
+        print(f"  CHECKED: {res['n_beds']} .bed files under {res['folder']}, "
+              f"newest {age(res['newest'])}")
+        print()
         print("  *** STALE OUTPUTS -- snakemake will NOT notice ***")
         print()
-        for k, nm, m, newest in stale:
+        for _, nm, m, newest in res["stale"]:
             behind = newest - m
             unit = (f"{behind:.0f}s" if behind < 90 else
                     f"{behind/60:.0f}m" if behind < 5400 else
@@ -329,7 +359,7 @@ def main() -> None:
         print("  cisTarget results on one region-set definition and DEM results")
         print("  on another. Delete the files listed above before resuming:")
         print()
-        for _, nm, _, _ in stale:
+        for _, nm, _, _ in res["stale"]:
             print(f"    rm {workdir / nm}")
     print()
 

@@ -354,6 +354,46 @@ bash 03_pipeline/create_env.sh --repair-pins
 That force-reinstalls the pinned versions under constraint, reinstalls the git
 packages, repairs what `pip check` reports within the pins, and re-verifies.
 
+### The cisTarget OOM: the recovery matrix, not the region sets
+
+Equal-N sets at 5,000 regions did not fix it, and the staleness check proved why
+that mattered: every output was newer than the newest `.bed`, so the sets were
+**already** equal-N when the run died. A 0.6 GB per-worker database slice cannot
+explain a 128 GB kill.
+
+The term I had missed is in `cisTarget.run_ctx()` -> ctxcore `recovery()`:
+
+```python
+rccs = np.empty(shape=(n_features, rank_threshold))
+```
+
+`n_features` = every motif in the database (32,765); `rank_threshold` =
+`int(ctx_rank_threshold x 1,837,304)`; dtype float64; then wrapped in `df_rccs`
+as a second copy. At the configured `0.05` that is **44.9 GB per worker**, and
+joblib runs `n_cpu` of them. Nothing about it scales with region-set size.
+
+Fix it in the config, not the allocation:
+
+```yaml
+params_motif_enrichment:
+  ctx_rank_threshold: 0.01     # was 0.05
+```
+
+9.0 GB per worker, 144 GB at 16 — or `--cpus-per-task 8` for 72 GB. Size it
+first:
+
+```bash
+python 03_pipeline/size_cistarget_memory.py --region-set-folder 01_atac/region_sets
+```
+
+NES, AUC and the enriched-motif calls are **unchanged**: the AUC integrates only
+the first `round(ctx_auc_threshold x total) - 1 = 9,186` ranks, which any
+threshold above the floor still covers. See `docs/MEMORY.md` for what does change
+(the leading-edge search) and why it does not affect motifs that clear NES.
+
+Floor is **0.0055**, not 0.005: scenicplus truncates the curve length with
+`int()` while ctxcore rounds the cutoff, so equality fails the assert by one.
+
 ### Rewriting the region sets in place does NOT invalidate the results
 
 Both motif-enrichment rules declare the region-set **folder** as their input:

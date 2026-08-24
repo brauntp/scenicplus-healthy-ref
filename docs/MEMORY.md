@@ -189,6 +189,65 @@ that is large for a 100k-cell object, and a shared filesystem makes topic
 modelling I/O-bound.
 
 
+## The real cisTarget term: the recovery-curve matrix
+
+Equal-N region sets did **not** fix the OOM, and that ruled out my previous
+explanation. The staleness check reported every output newer than the newest
+`.bed`, which means the sets were already equal-N at 5,000 regions when the run
+died — so a per-worker database slice of 0.6 GB cannot account for 128 GB.
+
+The term I had missed is in `cisTarget.run_ctx()`, which calls ctxcore's
+`recovery()`:
+
+```python
+rccs = np.empty(shape=(n_features, rank_threshold))     # ctxcore/recovery.py
+```
+
+`n_features` is **every motif in the database** and `rank_threshold` is
+`int(ctx_rank_threshold × total_regions_in_database)`. `np.empty`'s default dtype
+is float64. It is then wrapped in `df_rccs`, a DataFrame with a MultiIndex over
+every curve point, so two copies are live.
+
+At the configured `ctx_rank_threshold: 0.05` against 1,837,304 database regions:
+
+| term | figure |
+|---|---|
+| curve points per motif | 0.05 × 1,837,304 = 91,865 |
+| `rccs`: 32,765 × 91,865 float64 | 22.4 GB |
+| `+ df_rccs` | **44.9 GB per worker** |
+| db slice at 5,000-region sets, for comparison | 0.6 GB |
+
+**None of that depends on region-set size** — which is exactly why rewriting the
+sets changed nothing. And joblib runs `n_cpu` workers, so at `--cores 16` the
+recovery term alone is ~718 GB.
+
+### The lever, and what it costs
+
+`ctx_rank_threshold` is a config parameter, so this is directly tunable:
+
+| `ctx_rank_threshold` | points | per worker | ×8 | ×16 |
+|---|---|---|---|---|
+| 0.0500 | 91,865 | 44.9 GB | 359 GB | 718 GB |
+| 0.0200 | 36,746 | 17.9 GB | 144 GB | 287 GB |
+| 0.0100 | 18,373 | 9.0 GB | 72 GB | 144 GB |
+| 0.0055 | 10,105 | 4.9 GB | 39 GB | 79 GB |
+
+**What it does not change:** NES, AUC, and which motifs are called enriched. The
+AUC integrates `rccs[:, :rank_cutoff]` where `rank_cutoff = round(auc_threshold ×
+total) - 1 = 9,186`, fixed by `ctx_auc_threshold` — any `rank_threshold` at or
+above the floor still covers it.
+
+**What it does change:** `leading_edge4row` compares each motif's curve against
+`avgrcc + 2·std` over the full curve length, so a leading edge beyond the
+truncation point cannot be found. Such a motif would not have cleared the NES
+threshold anyway, since the AUC only integrates the first 9,186 ranks.
+
+**The floor is 0.0055, not 0.005.** scenicplus passes `int(rank_threshold ×
+total)` as the curve length while ctxcore computes `round(auc_threshold × total)`
+and asserts `rank_cutoff <= curve_length`. At `rank_threshold == auc_threshold`
+those are 9,186 and 9,187 — the assert fails on the truncation. Recommending
+equality would have named a value that crashes.
+
 ## Correction: cisTarget loads the database ONCE PER WORKER
 
 `motif_enrichment_cistarget` was OOM-killed at `--mem=128G` while

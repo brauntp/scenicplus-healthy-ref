@@ -53,6 +53,22 @@ from pathlib import Path
 BYTES_PER_RANK = 4          # int32 rankings
 TRANSIENT_FACTOR = 2.0      # pyarrow Table + pandas DataFrame both briefly live
 
+# THE DOMINANT TERM, and the one this script originally missed entirely.
+#
+# cisTarget.run_ctx() calls ctxcore's recovery(), which pre-allocates
+#
+#     rccs = np.empty(shape=(n_features, rank_threshold))
+#
+# with n_features = ALL motifs in the database and rank_threshold =
+# int(ctx_rank_threshold * total_regions_in_database). np.empty's default dtype
+# is float64. It is then wrapped in df_rccs, a DataFrame with a MultiIndex over
+# every curve point, so two copies are live.
+#
+# Note what this does NOT depend on: the size of the region set. That is why
+# rewriting the sets to an equal 5,000 regions did not stop the OOM.
+RECOVERY_BYTES = 8          # np.empty -> float64
+RECOVERY_COPIES = 2.0       # rccs + df_rccs
+
 
 def count_bed(p: Path) -> int:
     n = 0
@@ -125,6 +141,17 @@ def main() -> None:
                          "readable (v10nr_clust: 32765).")
     ap.add_argument("--cpus", type=int, nargs="+", default=[1, 2, 4, 8, 16],
                     help="Worker counts to tabulate.")
+    ap.add_argument("--total-db-regions", type=int, default=1_837_304,
+                    help="Regions in the cisTarget database (hg38 SCREEN v10 "
+                         "= 1,837,304). Sets the recovery-curve length, which "
+                         "is the dominant memory term.")
+    ap.add_argument("--rank-threshold", type=float, default=0.05,
+                    help="params_motif_enrichment.ctx_rank_threshold from the "
+                         "config. Curve length = this x --total-db-regions.")
+    ap.add_argument("--auc-threshold", type=float, default=0.005,
+                    help="params_motif_enrichment.ctx_auc_threshold. Sets the "
+                         "FLOOR on --rank-threshold: ctxcore asserts "
+                         "rank_cutoff <= curve length.")
     ap.add_argument("--mem-limit-gb", type=float, default=128,
                     help="The allocation to judge against, i.e. what --mem says "
                          "in slurm/scenicplus.sbatch. Default 128.")
@@ -163,25 +190,90 @@ def main() -> None:
         print(f"  ... {len(sizes)-8} more, down to {sizes[-1][1]:,} regions")
     print()
 
-    print("-- concurrent peak: joblib runs n_cpu sets at once ------------------")
-    print("  Each worker is a separate PROCESS holding its own database slice,")
-    print("  so the peak is the sum over the n_cpu LARGEST sets running")
-    print("  together -- not the largest single set, and not the total.")
+    curve_pts = int(args.rank_threshold * args.total_db_regions)
+    rec_gb = (n_motifs * curve_pts * RECOVERY_BYTES
+              * RECOVERY_COPIES / 1024**3)
+
+    print("-- the recovery-curve term (dominates; independent of set size) -----")
+    print(f"  ctx_rank_threshold {args.rank_threshold} x "
+          f"{args.total_db_regions:,} db regions")
+    print(f"    = {curve_pts:,} curve points per motif")
+    print(f"  rccs: {n_motifs:,} motifs x {curve_pts:,} points, float64 "
+          f"= {human(rec_gb/RECOVERY_COPIES)}")
+    print(f"  + df_rccs (DataFrame copy with a MultiIndex over every point)")
+    print(f"  = {human(rec_gb)} PER WORKER, whatever the region set contains")
     print()
-    print(f"  {'--cpus':>7}  {'resident':>12}  {'with transient 2x':>18}"
-          f"  {'suggested --mem':>16}")
+
+    print("-- concurrent peak: joblib runs n_cpu sets at once ------------------")
+    print("  Each worker is a separate PROCESS: its own database slice AND its")
+    print("  own recovery matrix. Nothing is shared.")
+    print()
+    print(f"  {'--cpus':>7}  {'db slice':>10}  {'recovery':>10}  "
+          f"{'total':>10}  {'suggested --mem':>16}")
     rows = []
     for c in args.cpus:
         top = [n for _, n in sizes[:c]]
-        gb = sum(top) * n_motifs * BYTES_PER_RANK / 1024**3
-        peak = gb * TRANSIENT_FACTOR
+        db_gb = sum(top) * n_motifs * BYTES_PER_RANK / 1024**3 * TRANSIENT_FACTOR
+        rc_gb = rec_gb * c
+        peak = db_gb + rc_gb
         mem = int(peak * 1.3) + 8
-        rows.append((c, gb, peak, mem))
-        print(f"  {c:>7}  {human(gb):>12}  {human(peak):>18}  {str(mem)+'G':>16}")
+        rows.append((c, db_gb, peak, mem))
+        print(f"  {c:>7}  {human(db_gb):>10}  {human(rc_gb):>10}  "
+              f"{human(peak):>10}  {str(mem)+'G':>16}")
     print()
-    print("  (transient 2x: subset_to_pandas builds a pyarrow Table and then a")
-    print("   pandas DataFrame, both live for a moment. --mem adds 30% + 8 GB")
-    print("   for the interpreter, motif annotations and the result objects.)")
+    print("  (--mem adds 30% + 8 GB for the interpreter, motif annotations and")
+    print("   the result objects.)")
+    print()
+
+    # The floor is NOT simply auc_threshold. scenicplus passes
+    # int(rank_threshold * total) as the curve length while ctxcore computes
+    # rank_cutoff = round(auc_threshold * total) and asserts
+    # rank_cutoff <= curve_length. At rank_threshold == auc_threshold those
+    # differ by the truncation: int(0.005*1837304) = 9186 vs round(...) = 9187,
+    # so the assert FAILS. Derive the smallest value that actually passes.
+    _cut = round(args.auc_threshold * args.total_db_regions)
+    floor = args.auc_threshold
+    while int(floor * args.total_db_regions) < _cut:
+        floor = round(floor + 0.0005, 4)
+    print("-- lowering ctx_rank_threshold: the real lever ----------------------")
+    print(f"  FLOOR: ctx_rank_threshold >= {floor} (NOT simply "
+          f"ctx_auc_threshold = {args.auc_threshold}).")
+    print(f"  scenicplus passes int(rank_threshold x total) as the curve length;")
+    print(f"  ctxcore computes rank_cutoff = round(auc_threshold x total) = "
+          f"{_cut:,} and")
+    print(f"  asserts rank_cutoff <= curve length. At rank_threshold = "
+          f"{args.auc_threshold} those are")
+    print(f"  {int(args.auc_threshold*args.total_db_regions):,} vs {_cut:,} -- "
+          f"the assert FAILS on the truncation.")
+    print()
+    print(f"  {'rank_thr':>9}  {'points':>10}  {'per worker':>11}  " +
+          "  ".join(f"{'x'+str(c):>7}" for c in args.cpus))
+    grid = sorted({0.05, 0.02, 0.01, floor}, reverse=True)
+    for rt in grid:
+        if rt < floor:
+            continue
+        # Belt-and-braces: every value printed must actually pass ctxcore's
+        # assert, or the table is recommending a crash.
+        assert int(rt * args.total_db_regions) >= _cut, rt
+        pts = int(rt * args.total_db_regions)
+        one = n_motifs * pts * RECOVERY_BYTES * RECOVERY_COPIES / 1024**3
+        # 4 decimals, not 3: the derived floor can be 0.0055, and printing it as
+        # "0.005" would name a value that fails ctxcore's assert.
+        line = f"  {rt:>9.4f}  {pts:>10,}  {one:>10.1f}G  "
+        line += "  ".join(f"{one*c:>6.0f}G" for c in args.cpus)
+        print(line)
+    print()
+    print("  What this does NOT change: NES, AUC, and which motifs are called")
+    print("  enriched. The AUC integrates rccs[:, :rank_cutoff] where")
+    print(f"  rank_cutoff = {round(floor*args.total_db_regions)-1:,}, fixed by "
+          f"ctx_auc_threshold.")
+    print("  Any rank_threshold at or above the floor still covers it.")
+    print()
+    print("  What it DOES change: leading_edge4row compares each motif's curve")
+    print("  against avgrcc + 2*std over the FULL curve length, so a leading")
+    print("  edge beyond the truncation point cannot be found. Such a motif")
+    print("  would not have cleared the NES threshold anyway, since the AUC")
+    print("  only integrates the first rank_cutoff ranks.")
     print()
 
     print("-- if the sets were equal-sized (--top-n) --------------------------")
@@ -205,33 +297,38 @@ def main() -> None:
     print()
 
     print("-- what this means -------------------------------------------------")
-    # BUG FIXED HERE: this was `next(...)`, which on an ascending --cpus list
-    # returns the SMALLEST passing value while the text below calls it "the
-    # largest that fits". On equal-N sets where every worker count fits, it
-    # printed "--cpus-per-task 1" -- advising a 16x slowdown for no reason.
-    fits = [c for c, _, peak, _ in rows if peak <= args.mem_limit_gb * 0.9]
-    largest_ok = max(fits) if fits else None
-    print("  Halving --cpus-per-task roughly halves the peak, at a proportional")
-    print("  cost in wall time for THIS rule only -- the other rules keep")
-    print(f"  whatever --cores you pass. There are {len(sizes)} region sets, so")
-    print(f"  more than {len(sizes)} workers buys nothing.")
-    if largest_ok:
-        peak_at = next(pk for c, _, pk, _ in rows if c == largest_ok)
-        print(f"  Under a {args.mem_limit_gb} GB allocation, the LARGEST worker "
-              f"count that fits")
-        print(f"  is --cpus-per-task {largest_ok} "
-              f"(peak {human(peak_at)}, i.e. "
-              f"{peak_at/args.mem_limit_gb:.0%} of the allocation).")
-        if largest_ok == max(args.cpus):
-            print(f"  That is the largest value tabulated -- there is headroom "
-                  f"for more,")
-            print(f"  though more than {len(sizes)} workers buys nothing "
-                  f"(one per region set).")
-    else:
-        print("  No tabulated worker count fits in 128 GB; either raise --mem or")
-        print("  cut the region sets down (01_cistopic/choose_dar_threshold.py")
-        print("  --top-n gives equal-sized sets, which also makes this peak")
-        print("  predictable rather than driven by the largest cell type).")
+    print("  The recovery term dominates and is n_cpu-fold, so BOTH levers")
+    print("  work, and they multiply:")
+    print()
+    budget = args.mem_limit_gb * 0.9
+    best = None
+    for rt in (0.05, 0.02, 0.01, floor):
+        if rt < floor:
+            continue
+        pts = int(rt * args.total_db_regions)
+        one = n_motifs * pts * RECOVERY_BYTES * RECOVERY_COPIES / 1024**3
+        ok = [c for c in args.cpus
+              if one * c + (sum(n for _, n in sizes[:c]) * n_motifs
+                            * BYTES_PER_RANK / 1024**3 * TRANSIENT_FACTOR)
+              <= budget]
+        top = max(ok) if ok else None
+        print(f"    ctx_rank_threshold {rt:<6} -> largest --cpus-per-task that "
+              f"fits {args.mem_limit_gb:g} GB: "
+              f"{top if top else 'NONE (even 1 worker exceeds it)'}")
+        if top and (best is None or top > best[1]):
+            best = (rt, top)
+    print()
+    if best:
+        rt, c = best
+        print(f"  Best throughput inside {args.mem_limit_gb:g} GB: "
+              f"ctx_rank_threshold {rt}, --cpus-per-task {c}.")
+    print(f"  There are {len(sizes)} region sets, so more than {len(sizes)} "
+          f"workers buys nothing.")
+    print()
+    print("  A note on which lever to reach for first: lowering")
+    print("  ctx_rank_threshold leaves NES/AUC and the enriched-motif calls")
+    print("  identical (see above), whereas cutting --cpus-per-task costs wall")
+    print("  time in this rule. Prefer the threshold.")
     print("=" * 74)
 
 
