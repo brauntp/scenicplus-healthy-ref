@@ -164,10 +164,12 @@ if [[ "${CONDA_DEFAULT_ENV:-}" == "$CONDA_ENV" ]]; then
     echo "using inherited conda env: $CONDA_DEFAULT_ENV"
     # The activate.d hook fires on `conda activate`, so an INHERITED env brings
     # LD_LIBRARY_PATH along only if it was set at submit time. Assert it rather
-    # than assume: without the env's own lib dir ahead of /lib64, the PyPI
-    # manylinux wheels (sorted-nearest, ncls, pyrle) load the system
-    # libstdc++, which is too old for their CXXABI, and every cisTarget/DEM
-    # and region-to-gene rule dies at import -- hours in, not here.
+    # than assume: without the env's own lib dir ahead of /lib64, extensions
+    # whose RPATH does not reach $CONDA_PREFIX/lib resolve the SYSTEM
+    # libstdc++, which is too old for the CXXABI they need. Measured on this
+    # cluster: 7 of 7 affected modules fail as-is, 0 of 7 with the lib dir
+    # prepended, and every cisTarget/DEM/region-to-gene rule dies at import --
+    # hours into a run, not here.
     case ":${LD_LIBRARY_PATH:-}:" in
         *":${CONDA_PREFIX}/lib:"*) ;;
         *) export LD_LIBRARY_PATH="${CONDA_PREFIX}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"

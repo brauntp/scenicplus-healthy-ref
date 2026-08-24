@@ -393,18 +393,27 @@ system `/lib64` one, and that one is too old.
 section still solves at the same 234 packages on linux-64, and that conda-forge
 supplies libstdcxx 16.1.0 — well past the required ABI.
 
-**Having the library is necessary but not sufficient.** Installing
-`libstdcxx-ng` left the error byte-identical, and the reason is the dynamic
-linker's search order:
+**Having the library is necessary but not sufficient.** The env already
+shipped `libstdc++` at CXXABI 1.3.17 — newer than the 1.3.15 required — and the
+error was byte-identical anyway. The measurement settled it:
 
-| extension built by | RPATH | finds the env's libstdc++? |
-|---|---|---|
-| conda | `$ORIGIN/../../..` | yes, unaided |
-| PyPI manylinux wheel | none | no — falls through to `ld.so.cache`, then `/lib64` |
+```
+as-is: 7/7 failed    with env lib dir: 0/7 failed
+```
 
-The failing modules all reach PyPI-wheel extensions, so nothing points them at
-the env's own library. Prepending `$CONDA_PREFIX/lib` to `LD_LIBRARY_PATH` is
-the lever.
+So the library was present, new enough, and simply not being used. The dynamic
+linker resolves each extension's dependencies by `DT_RUNPATH`, then
+`LD_LIBRARY_PATH`, then `ld.so.cache`, then the default directories — and the
+offending extension's RPATH does not reach `$CONDA_PREFIX/lib`, so it got
+`/lib64/libstdc++.so.6` while a newer copy sat in the same env.
+
+The untruncated error path corrected an assumption I had made: the file is under
+the env's own `lib/python3.11/lib-dynload`, one of **CPython's bundled extension
+modules**, not a pip-installed wheel in `site-packages`. So this is not a
+manylinux-wheel-versus-conda-build story, and `diagnose_cxxabi.sh` now scans
+`lib-dynload` and the env `lib` directory alongside `site-packages` — its
+original site-packages-only scan would have found nothing and said so
+misleadingly.
 
 **For an env that already exists**, don't rebuild:
 

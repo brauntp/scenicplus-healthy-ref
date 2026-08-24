@@ -67,6 +67,32 @@ else
 fi
 echo
 
+# Write (or refresh) the activation hook. Defined as a function because BOTH
+# outcomes need it: the LD_LIBRARY_PATH branch writes it, and the "clean as-is"
+# branch must refresh an existing one -- after the hook takes effect, a re-run
+# reports clean and would otherwise leave a stale hook in place forever.
+write_hook() {
+    HOOK="${PREFIX}/etc/conda/activate.d/zzz_libstdcxx.sh"
+    mkdir -p "$(dirname "$HOOK")"
+    cat > "$HOOK" <<'HOOKEOF'
+# Prepend this env's lib dir so compiled extensions find the conda
+# libstdc++ instead of the system /lib64 one, which is too old for the
+# CXXABI they were built against. The env's copy is newer, but an
+# extension whose RPATH does not reach $CONDA_PREFIX/lib will not use it
+# unless the linker is told to look here first. On the env this was
+# written for, the offending file was under lib/python3.11/lib-dynload --
+# one of CPython's own extension modules, not a pip wheel.
+#
+# Guarded: LD_LIBRARY_PATH is inherited by child processes and by batch
+# jobs, so an unguarded prepend accumulates duplicates every time the env
+# is activated inside an already-activated shell.
+case ":${LD_LIBRARY_PATH:-}:" in
+    *":${CONDA_PREFIX}/lib:"*) ;;
+    *) export LD_LIBRARY_PATH="${CONDA_PREFIX}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" ;;
+esac
+HOOKEOF
+}
+
 MODS=(pycistarget.motif_enrichment_cistarget
       pycistarget.motif_enrichment_dem
       pycistarget.input_output
@@ -122,14 +148,17 @@ fi
 
 # THE SECOND HALF OF THE PROBLEM
 # ------------------------------
-# Having the library is necessary, not sufficient. A conda-BUILT extension
-# carries RPATH $ORIGIN/../../.. and finds $CONDA_PREFIX/lib by itself. A
-# manylinux WHEEL from PyPI carries no such RPATH, so the dynamic linker falls
-# through to ld.so.cache and /lib64 -- the old one. The failing modules here all
-# come from PyPI wheels (sorted-nearest, ncls, pyrle, reached via pyranges),
-# which is why installing the library alone can leave the error unchanged.
+# Having the library is necessary, not sufficient. The env's libstdc++ can be
+# present and NEWER than the system one and still not be used: the dynamic
+# linker resolves each .so's dependencies by DT_RUNPATH, then LD_LIBRARY_PATH,
+# then ld.so.cache, then the default dirs. An extension whose RPATH does not
+# reach $CONDA_PREFIX/lib gets /lib64/libstdc++.so.6 -- the old one -- even
+# though a newer copy sits in the same env.
 #
-# So test both, and let the result decide rather than assuming.
+# On the cluster the offending file was under the env's own
+# lib/python3.11/lib-dynload, i.e. one of CPython's bundled extension modules,
+# not a pip-installed wheel in site-packages. So do not assume which file it
+# is: test both search paths and let the result decide.
 echo "-- does it import? testing with and without the env lib dir -------"
 try_imports "" "as-is"
 N_PLAIN=$?
@@ -142,6 +171,13 @@ echo
 
 FAIL=0
 if (( N_PLAIN == 0 )); then
+    # Clean as-is. That can mean the hook from a previous run is already doing
+    # its job, so refresh it rather than leaving an older version in place.
+    if [[ -f "${PREFIX}/etc/conda/activate.d/zzz_libstdcxx.sh" ]]; then
+        write_hook
+        echo "  refreshed the existing activation hook"
+        echo
+    fi
     echo "=============================================================="
     echo "FIXED, and no LD_LIBRARY_PATH needed. Proceed:"
     echo "    bash 03_pipeline/smoke_test.sh"
@@ -152,35 +188,23 @@ elif (( N_LLP == 0 )); then
     # Make it permanent. A hook under the env's activate.d fires for every
     # `conda activate` INCLUDING inside a batch job, which is the case that
     # matters -- typing the export in a login shell would not reach sbatch.
-    HOOK="${PREFIX}/etc/conda/activate.d/zzz_libstdcxx.sh"
-    mkdir -p "$(dirname "$HOOK")"
-    cat > "$HOOK" <<'HOOKEOF'
-# Prepend this env's lib dir so PyPI manylinux wheels find the conda
-# libstdc++ instead of the system /lib64 one, which is too old for the
-# CXXABI these wheels were built against. Conda-built extensions do not
-# need this (they carry an RPATH); pip-installed ones do.
-#
-# Guarded: LD_LIBRARY_PATH is inherited by child processes and by batch
-# jobs, so an unguarded prepend accumulates duplicates every time the env
-# is activated inside an already-activated shell.
-case ":${LD_LIBRARY_PATH:-}:" in
-    *":${CONDA_PREFIX}/lib:"*) ;;
-    *) export LD_LIBRARY_PATH="${CONDA_PREFIX}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" ;;
-esac
-HOOKEOF
+    write_hook
     echo "  wrote activation hook: $HOOK"
-    echo "  (fires on every `conda activate`, including inside batch jobs)"
+    echo "  (fires on every 'conda activate', including inside batch jobs)"
     echo
     echo "=============================================================="
     echo "FIXED via LD_LIBRARY_PATH, and made permanent."
     echo
-    echo "The library was present but the linker preferred /lib64: PyPI"
-    echo "manylinux wheels carry no RPATH into the env. The hook above"
-    echo "prepends \$CONDA_PREFIX/lib on activation, so it applies in batch"
-    echo "jobs too -- an export typed here would not have."
+    echo "The library was present and NEWER than the system one, but the"
+    echo "linker still resolved /lib64: the offending extension's RPATH does"
+    echo "not reach \$CONDA_PREFIX/lib. On this cluster the file named in the"
+    echo "error was under the env's own lib/python3.11/lib-dynload -- one of"
+    echo "CPython's bundled extensions, not a pip wheel in site-packages."
+    echo "The hook prepends \$CONDA_PREFIX/lib on activation, so it applies in"
+    echo "batch jobs too -- an export typed here would not have."
     echo
     echo "Re-activate to pick it up, then confirm:"
-    echo "    conda deactivate && conda activate \$(basename $PREFIX)"
+    echo "    conda deactivate && conda activate $(basename "$PREFIX")"
     echo "    bash 03_pipeline/smoke_test.sh"
     echo "=============================================================="
     exit 0

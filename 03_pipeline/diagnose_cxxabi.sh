@@ -27,12 +27,14 @@ PY="${CONDA_PREFIX:-}/bin/python"
 [[ -x "$PY" ]] || { echo "activate the env first" >&2; exit 1; }
 PREFIX="${CONDA_PREFIX}"
 SITE="$("$PY" -c 'import site;print(site.getsitepackages()[0])')"
+DYNLOAD="$("$PY" -c 'import sysconfig;print(sysconfig.get_config_var("DESTSHARED") or "")')"
 
 echo "=============================================================="
 echo "CXXABI diagnosis"
 echo "=============================================================="
 echo "  env    : $PREFIX"
 echo "  site   : $SITE"
+echo "  dynload: ${DYNLOAD:-<unknown>}"
 echo
 
 echo "-- [1] the full error, untruncated -------------------------------"
@@ -74,6 +76,14 @@ while IFS= read -r so; do
     if strings "$so" 2>/dev/null | grep -qx "CXXABI_1.3.15"; then
         hits=$((hits + 1))
         rel="${so#"$SITE"/}"
+        if [[ "$rel" == "$so" ]]; then
+            # Not under site-packages -- no owning pip distribution to look up.
+            # This is the interesting case: CPython's own lib-dynload, or a
+            # library under the env lib dir, wanting a newer ABI than the
+            # system libstdc++ provides.
+            printf "  %-52s %s\n" "${so#"$PREFIX"/}" "(not a pip distribution)"
+            continue
+        fi
         dist="${rel%%/*}"
         ver="$("$PY" -c "
 from importlib.metadata import distributions
@@ -85,11 +95,12 @@ for d in distributions():
 else: print('(owner not in metadata)')" 2>/dev/null)"
     printf "  %-52s %s\n" "$rel" "$ver"
     fi
-done < <(find "$SITE" -name "*.so" -type f 2>/dev/null)
+done < <(find "$SITE" ${DYNLOAD:+"$DYNLOAD"} "${PREFIX}/lib" -maxdepth 6 \
+         -name "*.so*" -type f 2>/dev/null)
 if (( hits == 0 )); then
-    echo "  none found by symbol scan -- the requirement may come from a"
-    echo "  transitively loaded library outside site-packages. Section 1's"
-    echo "  untruncated path names it."
+    echo "  none found under site-packages, lib-dynload or the env lib dir."
+    echo "  Section 1's untruncated path names the file; scan its directory"
+    echo "  directly if it is somewhere else."
 fi
 echo
 
