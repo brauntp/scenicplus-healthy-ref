@@ -354,6 +354,38 @@ bash 03_pipeline/create_env.sh --repair-pins
 That force-reinstalls the pinned versions under constraint, reinstalls the git
 packages, repairs what `pip check` reports within the pins, and re-verifies.
 
+### The absent cisTopic object is a safety guard, not a gap
+
+The second submission died on `run_pipeline.sh` demanding
+`01_atac/cistopic_obj.pkl` exist, with my own message claiming "snakemake still
+needs the path to resolve while building the DAG." **That claim was false**, and
+two scripts in this repo disagreed about it: `make_config.sh` called the same key
+branch-dead while `run_pipeline.sh` refused to start without it.
+
+Measured against the real pinned Snakefile on a snakemake dry run:
+
+| paired MuData | result |
+|---|---|
+| present | **13 jobs planned, `prepare_GEX_ACC` absent from the DAG** — its inputs are never evaluated |
+| absent | `MissingInputException in rule prepare_GEX_ACC_multiome`, naming both files |
+
+So snakemake does not evaluate a rule's inputs unless it needs the rule. And
+the reason it doesn't need it is **not** `is_multiome`: both branches of the
+Snakefile conditional (`prepare_GEX_ACC_multiome` / `_non_multiome`) declare the
+*same* two inputs, and the flag only selects which variant is defined. What keeps
+the rule out of the DAG is that its output already exists.
+
+That inverts the design. **Those files being absent is load-bearing.** If
+snakemake ever judged the paired object stale, a missing input aborts the run —
+whereas with the files present it would regenerate the object through SCENIC+'s
+own label-random pairing, replacing GLUE-paired metacells with randomly paired
+ones and reporting success. `--rerun-triggers mtime` makes that unlikely; a
+missing input makes it impossible.
+
+Both scripts now say so, and the check is inverted: absent reports `[guard]`,
+**present** is what gets flagged. Do not create placeholder files to satisfy a
+checker — that disarms the guard.
+
 ### The first pipeline submission died in one second
 
 `jobs/scenicplus-<id>.out` showed `started` and `finished` at the same

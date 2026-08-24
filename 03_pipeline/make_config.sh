@@ -11,7 +11,8 @@
 # path here fails at rule time, after cisTarget has loaded a 33 GiB database.
 #
 # This substitutes them, then checks that every path the config names actually
-# exists (or is a branch-dead entry the DAG never reads), so the failure is
+# exists (or is a prepare_GEX_ACC input, whose absence is the intended guard),
+# so the failure is
 # reported now rather than hours in.
 #
 # ORDER OF OPERATIONS
@@ -27,11 +28,23 @@
 #   bash 03_pipeline/make_config.sh --out /tmp/c.yaml   # elsewhere
 #   bash 03_pipeline/make_config.sh --check-only        # validate, write nothing
 #
-# BRANCH-DEAD ENTRIES: the template deliberately names some inputs the DAG never
-# reads on our branch (is_multiome: True skips prepare_GEX_ACC, so the cisTopic
-# object and the separate RNA h5ad are never opened). Those are recorded for
-# provenance. This script reports them as "branch-dead" rather than erroring,
-# because a missing file there is expected and not a problem.
+# UNREACHED ENTRIES: the template names two inputs the DAG does not open in our
+# situation -- the cisTopic object and the separate RNA h5ad, both inputs to
+# prepare_GEX_ACC. This script reports them rather than erroring, because a
+# missing file there is expected and in fact desirable.
+#
+# The REASON is not is_multiome. Both branches of the Snakefile conditional
+# (prepare_GEX_ACC_multiome / prepare_GEX_ACC_non_multiome) declare the SAME two
+# inputs; the flag only selects which variant is defined. What keeps the rule out
+# of the DAG is that its OUTPUT -- the paired MuData at
+# output_data.combined_GEX_ACC_mudata -- already exists, so snakemake has no
+# reason to build it and never evaluates its inputs. Measured on a real dry run:
+# with the mudata present, 13 jobs are planned and prepare_GEX_ACC is absent;
+# remove the mudata and snakemake raises MissingInputException naming both files.
+#
+# So absent is the SAFE state, not a gap: if snakemake ever judged the paired
+# object stale, a missing input aborts the run instead of quietly regenerating
+# GLUE-paired metacells as randomly-paired ones. Do not create placeholders.
 # =============================================================================
 set -o errexit
 set -o nounset
@@ -136,7 +149,8 @@ if [ -n "$LEFT" ]; then
 fi
 
 # --------------------------------------------------------------------------- #
-# Validate: does every referenced path exist? Branch-dead entries excepted.
+# Validate: does every referenced path exist? prepare_GEX_ACC's two inputs are
+# exempt -- absent is correct there, and PRESENT is what gets flagged.
 # --------------------------------------------------------------------------- #
 python3 - "$RENDERED" "$REPO_ROOT" "$PAIRED" <<'PY'
 import os, sys
@@ -161,14 +175,19 @@ cfg = yaml.safe_load(open(rendered))
 inp = cfg.get("input_data", {})
 out = cfg.get("output_data", {})
 
-# Keys the DAG never opens on the is_multiome: True branch. prepare_GEX_ACC is
-# the only rule that reads them, and it is skipped when the combined mudata is
-# supplied directly -- verified against a real snakemake dry run earlier.
+# Inputs to prepare_GEX_ACC, the one rule that reads them. It stays out of the
+# DAG because its output (the paired MuData) already exists -- NOT because of
+# is_multiome, which merely picks between two rule variants declaring identical
+# inputs. Verified on a real snakemake dry run: mudata present -> 13 jobs, rule
+# absent, these paths never evaluated; mudata absent -> MissingInputException
+# naming both. Absent is therefore the intended state.
 BRANCH_DEAD = {"cisTopic_obj_fname", "GEX_anndata_fname"}
 
 # is_multiome lives under params_data_preparation (Snakefile:10 branches on it),
-# NOT params_general -- reading the wrong key returned None and would have
-# exempted these inputs on a branch where the DAG genuinely opens them.
+# NOT params_general -- reading the wrong key returned None. It is still read and
+# reported here because it selects which prepare_GEX_ACC variant is defined and
+# therefore what a rebuild WOULD do, but it does not decide whether these two
+# inputs get opened; the presence of the paired mudata does.
 multi = cfg.get("params_data_preparation", {}).get("is_multiome")
 if multi is None:
     sys.exit("ERROR: params_data_preparation.is_multiome not found in the "
@@ -178,17 +197,32 @@ if not multi:
     BRANCH_DEAD = set()
 
 fail = []
+# is_multiome picks WHICH prepare_GEX_ACC variant is defined; it does not decide
+# whether the rule runs. The presence of the paired mudata does that, and it is
+# checked separately below.
 print(f"  is_multiome            : {multi}"
-      + ("  (prepare_GEX_ACC skipped)" if multi
-         else "  (prepare_GEX_ACC RUNS -- nothing is branch-dead)"))
+      + ("  (selects prepare_GEX_ACC_multiome)" if multi
+         else "  (selects prepare_GEX_ACC_non_multiome -- SCENIC+'s own"
+              " label-random pairing)"))
 for k, v in inp.items():
     if not isinstance(v, str):
         continue
     exists = os.path.exists(v)
-    tag = ("OK   " if exists else
-           ("dead " if k in BRANCH_DEAD else "MISS "))
-    print(f"  [{tag}] {k:<26} {v}")
-    if not exists and k not in BRANCH_DEAD:
+    # "guard" not "dead": these are prepare_GEX_ACC's inputs, and their ABSENCE
+    # is what makes an unwanted rebuild fail loudly rather than silently replace
+    # GLUE-paired metacells. Present is the state worth flagging.
+    if k in BRANCH_DEAD:
+        tag = "guard" if not exists else "PRESENT"
+    else:
+        tag = "OK   " if exists else "MISS "
+    print(f"  [{tag:<5}] {k:<26} {v}")
+    if k in BRANCH_DEAD:
+        if exists:
+            print(f"           ^ prepare_GEX_ACC input is PRESENT. Absent is safer:"
+                  f" a rebuild would then abort instead of silently"
+                  f" re-pairing at random.")
+        continue
+    if not exists:
         fail.append((k, v))
 
 # The paired object is named relative to the working directory in output_data.
@@ -207,7 +241,7 @@ if fail:
         print(f"  {k}: {v}")
     sys.exit(1)
 print()
-print("all non-branch-dead inputs present")
+print("all required inputs present; prepare_GEX_ACC inputs absent as intended")
 PY
 VALIDATED=$?
 

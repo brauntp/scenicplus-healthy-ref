@@ -419,16 +419,44 @@ check_file() {
     ok "$label  ($(du -h "$path" 2>/dev/null | cut -f1))  $path"
 }
 
-# The cisTopic object and GEX AnnData are inputs to prepare_GEX_ACC, which we
-# BYPASS (see config.template.yaml header). Snakemake nonetheless evaluates them
-# while building the DAG, so they must exist -- a missing file here is a
-# MissingInputException before any work starts, even though the rule never runs.
-check_file "$CISTOPIC_OBJ" "cisTopic object (DAG-only; rule bypassed)" \
-    "This is input to prepare_GEX_ACC, which we pre-satisfy with the hand-built" \
-    "h5mu -- but snakemake still needs the path to resolve while building the DAG." \
-    "Point it at the cisTopic object from 01_atac/."
-check_file "$GEX_ANNDATA" "GEX AnnData (DAG-only; rule bypassed)" \
-    "Same as above: read when the DAG is constructed, never actually consumed."
+# --- prepare_GEX_ACC's inputs: absent is CORRECT, and load-bearing -----------
+#
+# I previously required these to exist, on the belief that snakemake evaluates
+# every rule's inputs while building the DAG. That is wrong, and measured:
+#
+#   paired mudata EXISTS   -> prepare_GEX_ACC is not in the DAG at all
+#                             (13 jobs planned, rule absent), and the missing
+#                             cisTopic/GEX paths are never evaluated.
+#   paired mudata ABSENT   -> the rule is needed and snakemake raises
+#                             MissingInputException naming both files.
+#
+# Note also that `is_multiome` does NOT skip the rule -- both branches of the
+# Snakefile conditional (prepare_GEX_ACC_multiome / _non_multiome) declare the
+# SAME two inputs. The flag only selects which variant exists. What keeps the
+# rule out of the DAG is that its output, the paired mudata, is already there.
+#
+# So these files being absent is exactly the state we want, and it is a SAFETY
+# GUARD rather than a gap: if snakemake ever concludes the paired object is
+# stale and tries to rebuild it, the run dies with MissingInputException instead
+# of silently replacing GLUE-paired metacells with randomly paired ones. Do not
+# create placeholder files to satisfy a checker -- that would disarm the guard.
+#
+# What must be verified instead is the OUTPUT they would have produced -- the
+# paired MuData. That check already lives below, against H5MU_ABS (resolved
+# against --workdir), so it is not repeated here.
+for _p in "$CISTOPIC_OBJ" "$GEX_ANNDATA"; do
+    if [[ -e "$_p" ]]; then
+        warn "prepare_GEX_ACC input EXISTS: $_p"
+        warn "  Absent is the safer state. With both inputs present, a snakemake"
+        warn "  rerun that considers the paired object stale would regenerate it"
+        warn "  by SCENIC+'s own label-random pairing, discarding the GLUE"
+        warn "  metacells without error. run_pipeline.sh passes"
+        warn "  --rerun-triggers mtime to make that unlikely; a missing input"
+        warn "  makes it impossible."
+    else
+        ok "prepare_GEX_ACC input absent (intended guard): $_p"
+    fi
+done
 
 check_file "$CTX_DB" "cisTarget rankings DB" \
     "Expected <prefix>.regions_vs_motifs.rankings.feather." \
