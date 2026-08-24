@@ -1,20 +1,20 @@
-# SECOND LINE OF DEFENCE, not the primary fix.
+# Exported as PIP_CONSTRAINT by 03_pipeline/create_env.sh for both pip passes.
 #
-# Exported as PIP_CONSTRAINT by 03_pipeline/create_env.sh. Some pip versions
-# apply constraints when populating an ISOLATED PEP 517 build environment;
-# others do not. On the cluster (2026-08-24) it did NOT prevent the failure, so
-# do not rely on it.
+# NOT THE MECHANISM. Some pip versions apply constraints when populating an
+# isolated PEP 517 build environment; the pip on the cluster did not, and this
+# file alone did not prevent the failure. It is kept as a second line of
+# defence, and because it documents the bound for anyone running pip by hand.
 #
-# THE PRIMARY FIX IS IN environment.yml: `setuptools<81` and `wheel` as conda
-# dependencies. With `wheel` present pip takes the legacy setup.py build path,
-# which runs in the TARGET env and therefore uses the bounded setuptools.
-# Without it pip uses PEP 517 with an isolated env that installs
-# `setuptools>=40.8.0` unbounded -- i.e. 84.0.0, which removed pkg_resources,
-# which pybedtools 0.9.1's setup.py imports.
+# THE MECHANISM is two pip passes in create_env.sh. pip 26 removed the legacy
+# setup.py build path, so a source dist with no pyproject.toml is always built
+# in an isolated env that installs `setuptools>=40.8.0` unbounded -- i.e.
+# 84.0.0, which removed pkg_resources, which pybedtools 0.9.1's setup.py
+# imports. Pass A therefore builds those five sdists with the COMMAND-LINE flag
+# --no-build-isolation, against the conda-installed setuptools<81.
 #
-# Measured on pybedtools 0.9.1 with setuptools 80.9.0 in the env:
-#   no wheel, isolation ON   -> FAILED   (the cluster failure)
-#   no wheel, isolation OFF  -> BUILT
-#   wheel present, ON        -> BUILT
-#   wheel present, OFF       -> BUILT
+# Measured on pybedtools 0.9.1, setuptools 80.9.0 and wheel both in the env:
+#   pip 24.0   -> built (legacy setup.py path, target env)
+#   pip 25.2   -> built (legacy setup.py path, target env)
+#   pip 26.2.1 -> FAILED (legacy path gone; isolated env fetches setuptools 84)
+# And PIP_NO_BUILD_ISOLATION as an env var is inert on pip 26 at any value.
 setuptools<81

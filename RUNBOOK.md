@@ -279,34 +279,47 @@ The cause is neither pybedtools nor this env file. setuptools 84.0.0
 opens with `import pkg_resources` and exits with that message when it fails.
 
 **Which setuptools the build sees depends on which build path pip takes, and
-that turns on whether `wheel` is installed in the target env.** Measured on
-pybedtools 0.9.1 with setuptools 80.9.0 present:
+which paths exist depends on the PIP VERSION.** Measured on pybedtools 0.9.1
+with `setuptools==80.9.0` and `wheel` both installed in the env:
 
-| `wheel` in env | build isolation | result | path taken |
-|---|---|---|---|
-| absent | on | **FAILED** | PEP 517, isolated env fetches setuptools 84 |
-| absent | off | built | setup.py in the target env |
-| present | on | built | legacy `setup.py`, target env |
-| present | off | built | setup.py in the target env |
+| pip | result | path taken |
+|---|---|---|
+| 24.0 | built | legacy `setup.py`, runs in the target env |
+| 25.2 | built | legacy `setup.py`, runs in the target env |
+| 26.2.1 | **FAILED** | legacy path removed; PEP 517 isolated env fetches setuptools 84 |
 
-The first row is what happened on the cluster. So the fix lives in
-`environment.yml`: `setuptools<81` and `wheel` are now conda-section
-dependencies, which makes pip take the legacy `setup.py` path against a
-setuptools that still has `pkg_resources`. conda-forge resolves the bound to
-80.10.2 and the solve is still 234 packages.
+So two earlier fixes were both dead ends, and both looked correct when tested
+against an older pip:
 
-Three of the five source-built sdists ship no `pyproject.toml` (pybedtools
-0.9.1, pyranges 0.0.111, tspex 0.6.3), so all three follow whichever path pip
-picks — pybedtools is just the one pip reached first. All five build under the
-fix, the other two being pyrle 0.0.39 and MACS2 2.2.9.1.
+- `PIP_CONSTRAINT=setuptools<81` — not applied to build dependencies here.
+- `setuptools<81` + `wheel` in the conda section — only helps where the legacy
+  path still exists, i.e. pip < 26.
 
-`create_env.sh` refuses to start if those two conda entries are absent, and
-also exports `PIP_CONSTRAINT` from
-`03_pipeline/pip-build-constraints.txt` as a second line of defence — that
-variable did *not* prevent the cluster failure, so it is not the mechanism.
+`PIP_NO_BUILD_ISOLATION` as an *environment variable* is inert on pip 26 at any
+value (tested `1`, `true`, `yes`). Only the command-line flag works.
 
-Allow an hour or more: 234 conda packages (513 MB) plus 39 pip requirements,
-five of which build from source at pinned git refs.
+**The fix is two pip passes**, which is why `create_env.sh` drives pip itself
+instead of letting `mamba env create` run the yml's pip section:
+
+1. Conda section only — the pip section is stripped from a temporary copy, because letting mamba run it would install everything under isolation.
+2. The five sdists with no usable wheel, `--no-build-isolation --no-deps`: pybedtools 0.9.1, pyranges 0.0.111, pyrle 0.0.39, tspex 0.6.3, MACS2 2.2.9.1. Their build dependencies come from the conda section, already installed — which is why `setuptools<81` and `wheel` are conda dependencies, and why the script refuses to start without them.
+3. The full pinned pip list, isolation **on**. Three git dependencies declare their own PEP 518 backends — hatchling for pycistarget, poetry for LoomXpy, setuptools-scm for pycisTopic and scenicplus — so `--no-build-isolation` cannot be applied globally.
+
+Pass 2's installs satisfy pass 3's pins exactly, so pip reports "Requirement
+already satisfied" for all five and rebuilds none (verified on pip 26.2.1). The
+script also cross-checks its pass-2 list against the yml's pip section, so the
+two cannot drift into pinning different versions.
+
+Corrected along the way: `polars` 0.20.13 ships a `cp38-abi3` manylinux wheel
+that works on 3.11, and `pyBigWig` 0.3.22 has a `cp311` manylinux wheel — both
+were briefly miscounted as source builds because the check looked only for
+`cp311` tags. The source-built set is exactly five.
+
+Allow an hour or more: 234 conda packages (513 MB) plus 39 pip requirements.
+Two distinct groups of five, easy to confuse: five *sdists* compile from source
+(pybedtools, pyranges, pyrle, tspex, MACS2 — pass 2), and five *git*
+dependencies are cloned and built at pinned refs (pycistarget, pycisTopic,
+LoomXpy, pySCENIC, scenicplus — pass 3).
 
 The preflight is worth the seconds. It checks the platform, solver, python pin,
 pandas placement, git pin *reachability* and disk before the solve -- so a
