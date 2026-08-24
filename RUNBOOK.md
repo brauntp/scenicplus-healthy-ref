@@ -266,8 +266,8 @@ scenicplus --help                          # smoke test
 ```
 
 **Use `create_env.sh`, not `mamba env create` directly.** A direct
-`mamba env create` fails on this spec today, and fails *after* the 234-package
-conda solve has already succeeded:
+`mamba env create` fails on this spec, and fails *after* the 234-package conda
+solve has already succeeded:
 
 ```
 pybedtools uses setuptools (...) for installation but setuptools was not found
@@ -277,25 +277,33 @@ CondaEnvException: Pip failed
 The cause is neither pybedtools nor this env file. setuptools 84.0.0
 (2026-08-08) removed the bundled `pkg_resources`; pybedtools 0.9.1's `setup.py`
 opens with `import pkg_resources` and exits with that message when it fails.
-Because the 0.9.1 sdist ships no `pyproject.toml`, pip synthesizes an
-*unbounded* `setuptools>=40.8.0` build requirement, so the isolated build
-environment gets the newest one.
 
-Measured, not assumed:
+**Which setuptools the build sees depends on which build path pip takes, and
+that turns on whether `wheel` is installed in the target env.** Measured on
+pybedtools 0.9.1 with setuptools 80.9.0 present:
 
-| | |
-|---|---|
-| setuptools 84.0.0 | `ModuleNotFoundError: pkg_resources` |
-| setuptools 80.9.0 | imports (deprecation warning) |
-| setuptools pinned in the **conda** section | **does not help** — build isolation ignores the target env |
-| `PIP_CONSTRAINT=setuptools<81` | pybedtools, pyranges, tspex, pyrle and MACS2 all build |
+| `wheel` in env | build isolation | result | path taken |
+|---|---|---|---|
+| absent | on | **FAILED** | PEP 517, isolated env fetches setuptools 84 |
+| absent | off | built | setup.py in the target env |
+| present | on | built | legacy `setup.py`, target env |
+| present | off | built | setup.py in the target env |
 
-Three of the five source-built sdists carry no `pyproject.toml` (pybedtools,
-pyranges, tspex), so all three are exposed to the same break — pybedtools is
-just the one pip reached first. The constraint cannot live in the env file:
-`--no-build-isolation` is rejected inside a requirements file and a conda env
-file has nowhere to put a pip constraint. Hence the wrapper, which exports
-`PIP_CONSTRAINT` from `03_pipeline/pip-build-constraints.txt`.
+The first row is what happened on the cluster. So the fix lives in
+`environment.yml`: `setuptools<81` and `wheel` are now conda-section
+dependencies, which makes pip take the legacy `setup.py` path against a
+setuptools that still has `pkg_resources`. conda-forge resolves the bound to
+80.10.2 and the solve is still 234 packages.
+
+Three of the five source-built sdists ship no `pyproject.toml` (pybedtools
+0.9.1, pyranges 0.0.111, tspex 0.6.3), so all three follow whichever path pip
+picks — pybedtools is just the one pip reached first. All five build under the
+fix, the other two being pyrle 0.0.39 and MACS2 2.2.9.1.
+
+`create_env.sh` refuses to start if those two conda entries are absent, and
+also exports `PIP_CONSTRAINT` from
+`03_pipeline/pip-build-constraints.txt` as a second line of defence — that
+variable did *not* prevent the cluster failure, so it is not the mechanism.
 
 Allow an hour or more: 234 conda packages (513 MB) plus 39 pip requirements,
 five of which build from source at pinned git refs.

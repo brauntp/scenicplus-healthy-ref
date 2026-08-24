@@ -8,8 +8,13 @@
 # pybedtools AFTER the conda solve succeeds: setuptools 84 (2026-08-08)
 # removed pkg_resources, pybedtools 0.9.1's setup.py imports it, and the
 # 0.9.1 sdist has no pyproject.toml so pip's isolated build env installs
-# the newest setuptools. create_env.sh exports PIP_CONSTRAINT to bound it;
-# a conda env file has nowhere to put a pip build constraint.
+# the newest setuptools -- 84.0.0, which removed pkg_resources.
+#
+# The bound lives HERE, in the conda section: `setuptools<81` plus `wheel`.
+# With wheel present pip takes the legacy setup.py build path, which runs in
+# this environment and so uses the bounded setuptools. Without wheel it uses
+# PEP 517 with an isolated build env that fetches setuptools unbounded.
+# create_env.sh refuses to run if either entry is missing.
 #     conda activate scenicplus
 #     scenicplus --help          # smoke test: must print the CLI usage
 #     python -c "import pycisTopic, pycistarget, scenicplus; print('ok')"
@@ -62,6 +67,14 @@ dependencies:
   # LOAD-BEARING PATCH PIN: pyproject.toml's `<=3.11.8` is inclusive.
   - python=3.11.8
   - pip
+  # LOAD-BEARING BOUND. create_env.sh runs pip with --no-build-isolation, so
+  # these are the setuptools/wheel the source builds actually use -- pip does
+  # not create a separate build env to fetch its own. setuptools 84.0.0
+  # (2026-08-08) removed the bundled pkg_resources module, and pybedtools
+  # 0.9.1's setup.py imports it, so an unbounded setuptools breaks the build.
+  # conda-forge resolves this to 80.10.2 (verified for linux-64/py3.11).
+  - setuptools<81
+  - wheel
 
   # --- build toolchain -----------------------------------------------------
   # Several dependencies have no wheel for every platform and are built from

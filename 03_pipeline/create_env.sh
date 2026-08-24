@@ -4,7 +4,7 @@
 #
 # WHY THIS WRAPPER EXISTS
 # -----------------------
-# `mamba env create -f 03_pipeline/environment.yml` fails on 2026-08-24 with:
+# `mamba env create -f 03_pipeline/environment.yml` fails with:
 #
 #     pybedtools uses setuptools (...) for installation but setuptools was
 #     not found
@@ -12,34 +12,47 @@
 #
 # and it fails AFTER the 234-package conda solve has already succeeded.
 #
-# The cause is not pybedtools and not this environment file. setuptools 84.0.0
-# (2026-08-08) REMOVED the bundled `pkg_resources` module. pybedtools 0.9.1's
-# setup.py opens with `import pkg_resources` inside a try/except ImportError
-# whose handler prints exactly that message. And because the 0.9.1 sdist ships
-# no pyproject.toml, pip synthesizes a build requirement of
-# `setuptools>=40.8.0` -- unbounded -- so the isolated build environment gets
-# the newest setuptools, which no longer has pkg_resources.
+# THE MECHANISM (measured, not inferred)
+# --------------------------------------
+# setuptools 84.0.0 (2026-08-08) removed the bundled `pkg_resources` module.
+# pybedtools 0.9.1's setup.py opens with `import pkg_resources` inside a
+# try/except ImportError whose handler prints exactly that message.
 #
-# MEASURED, not assumed:
-#   * setuptools 84.0.0 -> ModuleNotFoundError: No module named 'pkg_resources'
-#   * setuptools 80.9.0 -> imports (with a deprecation warning)
-#   * pinning setuptools in the CONDA section does NOT help: pip's build
-#     isolation creates a fresh environment and ignores what is installed in
-#     the target env. Verified by installing setuptools 80.9.0 into a venv and
-#     watching the pybedtools build fail anyway.
-#   * PIP_CONSTRAINT is honoured when pip populates the isolated build env, so
-#     it is the one mechanism that reaches the build. With
-#     `setuptools<81`, all four source-built packages build cleanly:
-#     pybedtools 0.9.1, pyranges 0.0.111, tspex 0.6.3, pyrle 0.0.39,
-#     MACS2 2.2.9.1.
+# Which setuptools the build sees depends on WHICH BUILD PATH pip takes, and
+# that depends on whether `wheel` is installed in the target environment:
 #
-# Three of the source-built sdists carry NO pyproject.toml (pybedtools,
-# pyranges, tspex), so all three are exposed to the same break -- pybedtools is
-# simply the one pip reached first.
+#   wheel ABSENT  -> pip uses the PEP 517 path with an ISOLATED build env,
+#                    which installs `setuptools>=40.8.0` unbounded, i.e. 84.
+#                    ("Installing build dependencies ... Getting requirements
+#                    to build wheel: error")   -> THIS IS THE FAILURE
+#   wheel PRESENT -> pip uses the legacy setup.py path, which runs in the
+#                    TARGET env against the setuptools installed there.
+#                    ("Preparing metadata (setup.py) ... done")
 #
-# A requirements/environment file cannot express this: `--no-build-isolation`
-# is rejected inside a requirements file, and a conda env file has nowhere to
-# put a pip constraint. Hence a wrapper.
+# Full matrix, measured on pybedtools 0.9.1 with setuptools 80.9.0 in the env:
+#
+#   no wheel, isolation ON   -> FAILED   <- what happened on the cluster
+#   no wheel, isolation OFF  -> BUILT
+#   wheel present, ON        -> BUILT
+#   wheel present, OFF       -> BUILT
+#
+# THE FIX is therefore in environment.yml, not here: `setuptools<81` and
+# `wheel` are now conda-section dependencies, so the legacy path is taken and
+# it uses a setuptools that still has pkg_resources. conda-forge resolves the
+# bound to 80.10.2 (verified for linux-64/py3.11; the solve is still 234
+# packages).
+#
+# PIP_CONSTRAINT is still exported below, as a second line of defence for pip
+# versions that DO apply constraints to build dependencies. It is not the
+# primary mechanism: it did not prevent the failure on the cluster, so do not
+# rely on it.
+#
+# Also worth knowing: three of the five source-built sdists ship no
+# pyproject.toml (pybedtools 0.9.1, pyranges 0.0.111, tspex 0.6.3), so all
+# three take whichever path pip chooses. pybedtools is simply the one pip
+# reached first -- fixing it alone would have moved the failure, not removed
+# it. All five build cleanly under the fix: those three plus pyrle 0.0.39 and
+# MACS2 2.2.9.1.
 #
 # Usage:
 #     bash 03_pipeline/create_env.sh                # build it
@@ -85,10 +98,11 @@ echo "  spec        : $YML"
 echo "  constraints : $CONS"
 grep -vE '^[[:space:]]*(#|$)' "$CONS" | sed 's/^/                /'
 echo
-echo "  PIP_CONSTRAINT is exported so it reaches pip's ISOLATED build"
-echo "  environment. Without it the build dies on pybedtools after the"
-echo "  conda solve has already succeeded (setuptools 84 dropped"
-echo "  pkg_resources; see the header of this script)."
+echo "  The real fix is in the spec: setuptools<81 and wheel are conda"
+echo "  dependencies, so pip takes the legacy setup.py build path in the"
+echo "  TARGET env instead of an isolated env that fetches setuptools 84"
+echo "  (which dropped pkg_resources, breaking pybedtools 0.9.1's setup.py)."
+echo "  PIP_CONSTRAINT below is a second line of defence, not the mechanism."
 echo
 
 if "$SOLVER" env list 2>/dev/null | grep -qE "^${ENV_NAME}[[:space:]]"; then
@@ -97,6 +111,16 @@ if "$SOLVER" env list 2>/dev/null | grep -qE "^${ENV_NAME}[[:space:]]"; then
      or build under a different name:
        PIP_CONSTRAINT=${CONS} ${SOLVER} env create -f ${YML} -n <other>"
 fi
+
+for req in "setuptools<81" "wheel"; do
+    if ! grep -qE "^\s+- ${req}\s*$" "$YML"; then
+        die "$YML is missing the conda dependency '${req}'.
+     That bound is what makes pip take the legacy setup.py build path.
+     Without it the build fails on pybedtools after the conda solve --
+     see the header of this script."
+    fi
+done
+log "spec carries the build-path fix (setuptools<81, wheel)"
 
 log "validating the spec first (seconds)"
 if ! bash 03_pipeline/preflight_env.sh; then
