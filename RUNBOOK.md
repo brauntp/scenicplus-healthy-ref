@@ -354,6 +354,38 @@ bash 03_pipeline/create_env.sh --repair-pins
 That force-reinstalls the pinned versions under constraint, reinstalls the git
 packages, repairs what `pip check` reports within the pins, and re-verifies.
 
+### Rewriting the region sets in place does NOT invalidate the results
+
+Both motif-enrichment rules declare the region-set **folder** as their input:
+
+```python
+input: region_set_folder=config["input_data"]["region_set_folder"]
+```
+
+Snakemake stats that directory. **A directory's mtime changes when an entry is
+added or removed — not when a file inside is overwritten in place.** Verified
+directly against snakemake:
+
+| change to the region sets | snakemake |
+|---|---|
+| overwrite an existing `.bed` in place | `Nothing to be done` |
+| add a new `.bed` | rerun |
+
+`choose_dar_threshold.py --top-n N --write` rewrites the same filenames. So after
+running it, snakemake happily resumes with `dem_results.hdf5` and everything
+downstream still computed from the **previous** region sets.
+
+This is worse than a crash. eGRNs would be assembled from cisTarget results on
+one region-set definition and DEM results on another, and nothing would say so.
+
+`pipeline_status.py` now compares every output at or downstream of motif
+enrichment against the newest `.bed` mtime and prints the `rm` commands for
+anything older. Run it after any `--write`:
+
+```bash
+python 03_pipeline/pipeline_status.py --config 03_pipeline/config.yaml
+```
+
 ### A "login-node safe" tool that was not
 
 `size_cistarget_memory.py` was documented as "runs in seconds on a login node."

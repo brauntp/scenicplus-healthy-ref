@@ -125,6 +125,9 @@ def main() -> None:
                          "readable (v10nr_clust: 32765).")
     ap.add_argument("--cpus", type=int, nargs="+", default=[1, 2, 4, 8, 16],
                     help="Worker counts to tabulate.")
+    ap.add_argument("--mem-limit-gb", type=float, default=128,
+                    help="The allocation to judge against, i.e. what --mem says "
+                         "in slurm/scenicplus.sbatch. Default 128.")
     args = ap.parse_args()
 
     if not args.region_set_folder.is_dir():
@@ -202,14 +205,28 @@ def main() -> None:
     print()
 
     print("-- what this means -------------------------------------------------")
-    smallest_ok = next((c for c, _, peak, _ in rows if peak <= 120), None)
+    # BUG FIXED HERE: this was `next(...)`, which on an ascending --cpus list
+    # returns the SMALLEST passing value while the text below calls it "the
+    # largest that fits". On equal-N sets where every worker count fits, it
+    # printed "--cpus-per-task 1" -- advising a 16x slowdown for no reason.
+    fits = [c for c, _, peak, _ in rows if peak <= args.mem_limit_gb * 0.9]
+    largest_ok = max(fits) if fits else None
     print("  Halving --cpus-per-task roughly halves the peak, at a proportional")
     print("  cost in wall time for THIS rule only -- the other rules keep")
     print(f"  whatever --cores you pass. There are {len(sizes)} region sets, so")
     print(f"  more than {len(sizes)} workers buys nothing.")
-    if smallest_ok:
-        print(f"  Under a 128 GB allocation, --cpus-per-task {smallest_ok} is the")
-        print(f"  largest that fits with headroom.")
+    if largest_ok:
+        peak_at = next(pk for c, _, pk, _ in rows if c == largest_ok)
+        print(f"  Under a {args.mem_limit_gb} GB allocation, the LARGEST worker "
+              f"count that fits")
+        print(f"  is --cpus-per-task {largest_ok} "
+              f"(peak {human(peak_at)}, i.e. "
+              f"{peak_at/args.mem_limit_gb:.0%} of the allocation).")
+        if largest_ok == max(args.cpus):
+            print(f"  That is the largest value tabulated -- there is headroom "
+                  f"for more,")
+            print(f"  though more than {len(sizes)} workers buys nothing "
+                  f"(one per region set).")
     else:
         print("  No tabulated worker count fits in 128 GB; either raise --mem or")
         print("  cut the region sets down (01_cistopic/choose_dar_threshold.py")

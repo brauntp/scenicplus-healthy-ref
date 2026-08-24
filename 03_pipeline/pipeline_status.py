@@ -122,6 +122,53 @@ def last_failure(workdir: Path) -> dict | None:
     return {"log": logs[0], "fails": fails, "tally": tally}
 
 
+
+def stale_against_region_sets(cfg: dict, workdir: Path,
+                              resolve) -> list[tuple[str, str, float, float]]:
+    """Outputs older than the newest .bed in the region-set folder.
+
+    THE HAZARD THIS CATCHES. Both motif-enrichment rules declare the region-set
+    FOLDER as their input:
+
+        input: region_set_folder=config["input_data"]["region_set_folder"]
+
+    Snakemake stats that directory. A directory's mtime changes when an entry is
+    added or removed -- NOT when a file inside it is overwritten in place. So
+    `choose_dar_threshold.py --top-n N --write`, which rewrites the same
+    filenames, leaves snakemake reporting "Nothing to be done" while the results
+    on disk were computed from the PREVIOUS region sets.
+
+    Verified directly against snakemake: overwriting an existing input file under
+    a directory input gives "Nothing to be done (all requested files are present
+    and up to date)"; adding a NEW file does trigger a rerun. So the failure is
+    silent and specific to in-place rewrites.
+
+    Downstream that is worse than a crash -- eGRNs would be assembled from
+    cisTarget results on one region-set definition and DEM results on another.
+    """
+    folder = cfg.get("input_data", {}).get("region_set_folder")
+    if not folder:
+        return []
+    fp = Path(folder)
+    if not fp.is_absolute():
+        fp = workdir / fp
+    beds = list(fp.rglob("*.bed"))
+    if not beds:
+        return []
+    newest = max(b.stat().st_mtime for b in beds)
+    stale = []
+    # Every output at or downstream of motif enrichment depends on the sets.
+    downstream = [k for _, keys in STAGES[1:] for k in keys]
+    for k in downstream:
+        q = resolve(k)
+        if q is None or not q.exists():
+            continue
+        m = q.stat().st_mtime
+        if m < newest:
+            stale.append((k, q.name, m, newest))
+    return stale
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(
         description=__doc__,
@@ -253,6 +300,37 @@ def main() -> None:
             print("  from a kill mid-write can also be a TRUNCATED file that")
             print("  looks complete. If the rule above is partial, delete its")
             print("  outputs before resuming.")
+    print()
+
+    print("-- staleness against the region sets -------------------------------")
+    stale = stale_against_region_sets(cfg, workdir, resolve)
+    if not stale:
+        print("  no output is older than the newest .bed in the region-set")
+        print("  folder. (If the folder is absent this check is skipped.)")
+    else:
+        print("  *** STALE OUTPUTS -- snakemake will NOT notice ***")
+        print()
+        for k, nm, m, newest in stale:
+            behind = newest - m
+            unit = (f"{behind:.0f}s" if behind < 90 else
+                    f"{behind/60:.0f}m" if behind < 5400 else
+                    f"{behind/3600:.1f}h")
+            print(f"    {nm:<34} written {age(m):<11} "
+                  f"= {unit} BEFORE the region sets")
+        print()
+        print("  Both motif-enrichment rules take the region-set FOLDER as their")
+        print("  input, and a directory's mtime does not change when a file")
+        print("  inside is overwritten in place. Rewriting the .bed files with")
+        print("  choose_dar_threshold.py --top-n N --write therefore leaves")
+        print("  snakemake reporting 'Nothing to be done' while these outputs")
+        print("  came from the PREVIOUS region sets.")
+        print()
+        print("  That is worse than a crash: eGRNs would be assembled from")
+        print("  cisTarget results on one region-set definition and DEM results")
+        print("  on another. Delete the files listed above before resuming:")
+        print()
+        for _, nm, _, _ in stale:
+            print(f"    rm {workdir / nm}")
     print()
 
     print("-- free space where outputs land -----------------------------------")
