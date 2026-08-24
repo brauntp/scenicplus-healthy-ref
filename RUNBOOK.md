@@ -298,17 +298,55 @@ against an older pip:
 `PIP_NO_BUILD_ISOLATION` as an *environment variable* is inert on pip 26 at any
 value (tested `1`, `true`, `yes`). Only the command-line flag works.
 
-**The fix is two pip passes**, which is why `create_env.sh` drives pip itself
-instead of letting `mamba env create` run the yml's pip section:
+**The build runs in five stages**, which is why `create_env.sh` drives pip
+itself instead of letting `mamba env create` run the yml's pip section:
 
 1. Conda section only — the pip section is stripped from a temporary copy, because letting mamba run it would install everything under isolation.
 2. The five sdists with no usable wheel, `--no-build-isolation --no-deps`: pybedtools 0.9.1, pyranges 0.0.111, pyrle 0.0.39, tspex 0.6.3, MACS2 2.2.9.1. Their build dependencies come from the conda section, already installed — which is why `setuptools<81` and `wheel` are conda dependencies, and why the script refuses to start without them.
-3. The full pinned pip list, isolation **on**. Three git dependencies declare their own PEP 518 backends — hatchling for pycistarget, poetry for LoomXpy, setuptools-scm for pycisTopic and scenicplus — so `--no-build-isolation` cannot be applied globally.
+3. The 34 pinned PyPI requirements, isolation **on**. This establishes the pins before anything else can override them.
+4. The five git packages, `--no-deps`.
+5. `pip check` names every unsatisfied requirement; those get installed, then the script verifies the pinned versions survived.
 
-Pass 2's installs satisfy pass 3's pins exactly, so pip reports "Requirement
-already satisfied" for all five and rebuilds none (verified on pip 26.2.1). The
-script also cross-checks its pass-2 list against the yml's pip section, so the
-two cannot drift into pinning different versions.
+### Why stage 4 needs `--no-deps`
+
+Resolving the git group normally fails outright:
+
+```
+ERROR: Cannot install ... because these package versions have conflicting dependencies.
+    The user requested loomxpy 0.4.2 (from git+...LoomXpy@<commit>)
+    scenicplus 1.0a2 depends on loomxpy 0.4.2 (from git+...LoomXpy@main)
+ResolutionImpossible
+```
+
+scenicplus v1.0a2's own `requirements.txt` declares `loomxpy @
+git+...LoomXpy@main`, and we pin a commit. **pip treats two different URLs for
+one name as irreconcilable even when the versions match** — no version range
+fixes it. Note which package is at fault: pycisTopic declares `loomxpy` with no
+URL and resolves against our pin fine (verified locally); only scenicplus pins
+the moving ref.
+
+There is a second, independent reason. Resolving pycisTopic *with* its declared
+dependencies silently overrides our pins — measured on pip 26.2.1:
+
+| package | our pin | resolver picked |
+|---|---|---|
+| scanpy | 1.8.2 | 1.11.0 |
+| anndata | 0.10.5.post1 | 0.11.4 |
+| scikit-learn | 1.3.2 | 1.5.2 |
+| scipy | 1.12.0 | 1.17.1 |
+| numba | 0.59.0 | 0.67.0 |
+| polars | 0.20.13 | 1.44.0 |
+| pyranges | 0.0.111 | 0.0.127 |
+| mudata | 0.2.3 | dropped |
+
+Those pins are transcribed from scenicplus's own `requirements.txt` lock, so
+losing them loses the thing this env file exists to reproduce.
+
+Blanket `--no-deps` is **not** the answer either: the git packages declare 196
+requirements our pinned list does not cover, and skipping them leaves an env
+that imports but breaks at use. Hence stage 5 — `pip check` reports exactly
+what is unsatisfied, so the repair is measured rather than guessed, and it runs
+inside the pins stage 3 established.
 
 Corrected along the way: `polars` 0.20.13 ships a `cp38-abi3` manylinux wheel
 that works on 3.11, and `pyBigWig` 0.3.22 has a `cp311` manylinux wheel — both
@@ -317,9 +355,9 @@ were briefly miscounted as source builds because the check looked only for
 
 Allow an hour or more: 234 conda packages (513 MB) plus 39 pip requirements.
 Two distinct groups of five, easy to confuse: five *sdists* compile from source
-(pybedtools, pyranges, pyrle, tspex, MACS2 — pass 2), and five *git*
+(pybedtools, pyranges, pyrle, tspex, MACS2 — stage 2), and five *git*
 dependencies are cloned and built at pinned refs (pycistarget, pycisTopic,
-LoomXpy, pySCENIC, scenicplus — pass 3).
+LoomXpy, pySCENIC, scenicplus — stage 4).
 
 The preflight is worth the seconds. It checks the platform, solver, python pin,
 pandas placement, git pin *reachability* and disk before the solve -- so a
