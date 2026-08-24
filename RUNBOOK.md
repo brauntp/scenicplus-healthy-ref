@@ -354,6 +354,41 @@ bash 03_pipeline/create_env.sh --repair-pins
 That force-reinstalls the pinned versions under constraint, reinstalls the git
 packages, repairs what `pip check` reports within the pins, and re-verifies.
 
+### cisTarget succeeded at `--cpus-per-task 2` (job 10719633)
+
+25.5 min, 21 region sets in 11 waves, `ctx_results.hdf5` 202 MB, at
+`--mem=128G`. The subset route worked and nothing scientific was changed —
+`ctx_rank_threshold` stayed at 0.05.
+
+**The per-worker database load is confirmed in the log, not just inferred:**
+`Reading cisTarget database` appears exactly twice per wave, once per joblib
+worker, taking ~60 s each before any region work starts.
+
+Two findings worth carrying forward.
+
+**Region retention is 85%, not "near-total".** The sets hold 5,000 regions each;
+cisTarget reported using 3,020–4,812 (mean 4,257) after mapping into the database
+at `fraction_overlap 0.4`. Best is HSC_MPP at 96%; **Stromal is 60%** — it loses
+40% of its regions, which is the expected consequence of a stromal set drawn from
+a haematopoietic reference meeting a SCREEN cCRE database built mostly on blood
+and standard cell lines. Read Stromal eRegulons with that in mind. The
+peak-overlap audit's "near-total" prediction was broadly right but optimistic.
+
+**The eGRN rules do not need throttling.** They also take `ctx_db_fname`, but
+`calculate_triplet_score` → `get_max_rank_of_motif_for_each_TF` builds **one**
+`cisTargetDatabase` over the union of cistrome regions plus a dense
+`to_numpy()` copy — no joblib fan-out over region sets, and `run_ctx` is never
+called, so no recovery matrix. Roughly 26 GB at a 105k-region union, one load
+regardless of `--cpus-per-task`. So resume the rest of the DAG at full width:
+
+```bash
+sbatch slurm/scenicplus.sbatch
+```
+
+Remaining rules: `prepare_menr`, `tf_to_gene`, `eGRN_direct`, `eGRN_extended`,
+`AUCell_direct`, `AUCell_extended`, `scplus_mudata`. `tf_to_gene` is the long one
+(GBM per gene over all TFs); `region_to_gene` is already banked.
+
 ### Resuming after the cisTarget OOM — the actual steps
 
 Everything except cisTarget is banked: `region_to_gene_adj.tsv` (71 min of GBM),

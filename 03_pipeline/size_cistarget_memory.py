@@ -348,6 +348,26 @@ def main() -> None:
         fits = "fits" if peak <= budget else "OOM"
         print(f"    --cpus-per-task {c:>2}: {-(-n_sets // c):>2} waves, "
               f"peak {human(peak):>9}  [{fits}]")
+    print()
+    print("-- the OTHER rules that read this database ---------------------------")
+    print("  eGRN_direct and eGRN_extended also take ctx_db_fname as an input,")
+    print("  but they are NOT this shape and do not need throttling:")
+    print()
+    print("    calculate_triplet_score -> get_max_rank_of_motif_for_each_TF")
+    print("    builds ONE cisTargetDatabase over the union of cistrome regions,")
+    print("    then rankings = db_rankings.to_numpy() -- a dense copy alongside")
+    print("    it. No joblib fan-out over region sets, and run_ctx is never")
+    print("    called, so there is NO recovery matrix.")
+    print()
+    print(f"  {'union of cistrome regions':>26}  {'slice + copy':>14}")
+    for union in (50_000, 105_000, 200_000):
+        gb = union * n_motifs * BYTES_PER_RANK / 1024**3 * 2
+        print(f"  {union:>26,}  {human(gb):>14}")
+    print()
+    print("  One load regardless of --cpus-per-task, so the eGRN rules can run")
+    print("  at full width even when cisTarget cannot. That is why the")
+    print("  recommended route is a --target subset build for cisTarget only,")
+    print("  then a normal resume: see RUNBOOK.md.")
     print("=" * 74)
 
 

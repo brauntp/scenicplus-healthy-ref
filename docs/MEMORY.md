@@ -189,6 +189,52 @@ that is large for a 100k-cell object, and a shared filesystem makes topic
 modelling I/O-bound.
 
 
+## MEASURED: cisTarget at `--cpus-per-task 2` (job 10719633)
+
+The subset run succeeded. Numbers from its log, replacing the projections:
+
+| | value |
+|---|---|
+| `--mem` requested | 128 GB (131072 MB) |
+| `--cpus-per-task` | 2 |
+| wall time | **25.5 min** for 21 region sets |
+| waves | 11 (2 sets each, then 1) |
+| per wave | mean 2.3 min (range 2.1–2.6) |
+| `ctx_results.hdf5` | 202 MB |
+
+**The per-worker database load is confirmed directly by the log:** `Reading
+cisTarget database` appears exactly **twice per wave** — once per joblib worker —
+and takes ~60 s each before any region work begins. That is the mechanism this
+document describes, observed rather than inferred.
+
+Wall-time extrapolation from the measurement, for choosing a worker count:
+
+| `--cpus-per-task` | waves | estimated wall |
+|---|---|---|
+| 1 | 21 | ~51 min |
+| 2 | 11 | ~25 min (measured) |
+| 4 | 6 | ~13 min |
+
+### Regions actually used: 85% of what the BEDs contain
+
+The sets hold 5,000 regions each, but cisTarget reported using 3,020–4,812
+(mean 4,257) after mapping into the database at `fraction_overlap 0.4`:
+
+| | regions used | retention |
+|---|---|---|
+| best (HSC_MPP) | 4,812 | 96% |
+| median | ~4,300 | 86% |
+| worst (Stromal) | 3,020 | **60%** |
+
+The peak-overlap audit predicted near-total query-side matching. At 85% mean that
+is broadly right but not exact, and **Stromal loses 40%** — worth remembering
+when reading its eRegulons, since a stromal region set drawn from a
+haematopoietic reference has the least support in a SCREEN cCRE database built
+mostly on blood and standard cell lines.
+
+This also means the memory tables above are conservative by ~15%: the db slice is
+sized on regions requested, and fewer are actually loaded.
+
 ## The real cisTarget term: the recovery-curve matrix
 
 Equal-N region sets did **not** fix the OOM, and that ruled out my previous
