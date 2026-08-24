@@ -529,8 +529,9 @@ cp 03_pipeline/config.template.yaml 03_pipeline/config.yaml
 # Always dry-run first: confirms the DAG SKIPS prepare_GEX_ACC
 03_pipeline/run_pipeline.sh --config 03_pipeline/config.yaml --cores 8 -- -n
 
-sbatch --account=<ARC_ACCOUNT> --partition=<ARC_PARTITION> \
-       slurm/scenicplus.sbatch 03_pipeline/config.yaml
+# Config path is optional -- defaults to what make_config.sh writes.
+# The lab convention is no --account, and the partition is set in the script.
+sbatch slurm/scenicplus.sbatch
 ```
 
 **The critical line is `combined_GEX_ACC_mudata: ACC_GEX.h5mu`.** That is the

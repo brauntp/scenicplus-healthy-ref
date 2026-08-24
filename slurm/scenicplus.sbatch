@@ -101,12 +101,26 @@
 ##SBATCH --mail-type=END,FAIL
 ##SBATCH --mail-user=<EMAIL>
 
-set -Eeuo pipefail
-
-CONFIG="${1:?usage: sbatch slurm/scenicplus.sbatch <config.yaml>}"
+# No `set -e` past the input checks: snakemake's exit status is captured so a
+# failed run still reaches the epilogue, which is where the "what to read next"
+# guidance lives. Same fix as pairing.sbatch, qc_paired.sbatch and
+# region_sets.sbatch -- this script was the one that still had it.
+set -Euo pipefail
 
 REPO_ROOT="${SLURM_SUBMIT_DIR:-$(pwd)}"
 cd "$REPO_ROOT" || exit 1
+
+# Default to what make_config.sh writes. Requiring the path as an argument made
+# job 10715268 die at submit-time-plus-queue-time on a usage error, for a file
+# whose location is already known.
+CONFIG="${1:-03_pipeline/config.yaml}"
+if [[ ! -f "$CONFIG" ]]; then
+    echo "ERROR: config not found: $CONFIG" >&2
+    echo "       Write it first:  bash 03_pipeline/make_config.sh" >&2
+    echo "       Or pass one:     sbatch slurm/scenicplus.sbatch <config.yaml>" >&2
+    exit 1
+fi
+echo "config         : $CONFIG"
 
 # A batch job does not inherit what you exported at a prompt, so read the
 # project's settings from the file. Same pattern as pairing.sbatch.
@@ -262,7 +276,29 @@ srun --cpu-bind=cores \
         --config "$CONFIG" \
         --cores "$CORES" \
         "${@:2}"
+RC=$?
 
 echo "==============================================================="
-echo "pipeline completed"
+if [[ "$RC" -eq 0 ]]; then
+    echo "pipeline completed"
+    echo
+    echo "Read first:"
+    echo "  - the eRegulon table: which groups yielded regulons at all. Three"
+    echo "    groups were dropped before region sets (Pro-Monocyte, cDC, Late"
+    echo "    GMP) and docs/QC_RESULT.md flags both erythroid groups as the"
+    echo "    worst-aligned in the pairing -- thin erythroid results are the"
+    echo "    cross-modal gap surfacing downstream, not a pipeline failure."
+    echo "  - sacct MaxRSS against --mem: the 54G here is an extrapolation from"
+    echo "    a column subset (1.07x overhead factor), not a measurement at"
+    echo "    scale. Record the real figure in docs/MEMORY.md."
+else
+    echo "pipeline FAILED (exit $RC)"
+    echo
+    echo "snakemake reports the failing RULE and its log path; read that before"
+    echo "resubmitting. A rule that fails on a missing input usually means the"
+    echo "config points somewhere the DAG does not expect --"
+    echo "  bash 03_pipeline/make_config.sh --check-only"
+    echo "revalidates every path in seconds."
+fi
 echo "==============================================================="
+exit "$RC"
