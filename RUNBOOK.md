@@ -307,6 +307,45 @@ itself instead of letting `mamba env create` run the yml's pip section:
 4. The five git packages, `--no-deps`.
 5. `pip check` names every unsatisfied requirement; those get installed, then the script verifies the pinned versions survived.
 
+### The first real build drifted five pins — and why
+
+Stage 5's repair ran **unconstrained**, so pip resolved the missing packages
+freely and upgraded five pinned versions on the way:
+
+| package | spec | installed |
+|---|---|---|
+| pandas | 1.5.0 | **3.0.5** |
+| matplotlib | 3.6.3 | 3.11.1 |
+| polars | 0.20.13 | 1.44.0 |
+| statsmodels | 0.14.1 | 0.14.6 |
+| tqdm | 4.66.2 | 4.70.0 |
+
+A pandas *major* version jump against a spec that pins 1.5.0 is not a cosmetic
+difference. Nothing forced it: the tightest declared floor among the git
+packages is tmtoolkit's `pandas>=1.4.0`, which 1.5.0 satisfies — verified that
+all five resolve at their pinned versions with pandas 1.5.0 held. "Already
+installed" is not a constraint; pip will upgrade an installed package to satisfy
+a new one.
+
+The repair step now runs under `PIP_CONSTRAINT` built from the spec's own pins,
+so pip either finds a solution within them or fails and says so. Drift is now a
+build **failure** rather than a printed note — an env with pandas 3 where the
+spec pins 1.5.0 would otherwise fail somewhere inside a multi-hour pipeline run.
+
+Stage 5 also verifies what stage 4 installed `--no-deps`: it imports all five
+git packages and checks the `scenicplus` console script responds. On the first
+build `scenicplus --help` gave "command not found" while the build reported
+success, because nothing checked.
+
+**If an existing env has drifted**, repair it in place rather than rebuilding:
+
+```bash
+bash 03_pipeline/create_env.sh --repair-pins
+```
+
+That force-reinstalls the pinned versions under constraint, reinstalls the git
+packages, repairs what `pip check` reports within the pins, and re-verifies.
+
 ### Why stage 4 needs `--no-deps`
 
 Resolving the git group normally fails outright:

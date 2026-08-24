@@ -71,7 +71,13 @@ cd "$REPO_ROOT" || exit 1
 YML="03_pipeline/environment.yml"
 CONS="03_pipeline/pip-build-constraints.txt"
 DRY=0
-[[ "${1:-}" == "--dry-run" ]] && DRY=1
+REPAIR=0
+case "${1:-}" in
+    --dry-run)     DRY=1 ;;
+    --repair-pins) REPAIR=1 ;;
+    "")            ;;
+    *)             echo "usage: $0 [--dry-run|--repair-pins]" >&2; exit 2 ;;
+esac
 
 log() { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
@@ -91,6 +97,101 @@ for line in open(sys.argv[1]):
     if line.startswith('name:'):
         print(line.split(':', 1)[1].strip()); break
 " "$YML")"
+
+if (( REPAIR )); then
+    # Repair an EXISTING env in place, rather than an hour-long rebuild. Fixes
+    # the two things the first real build got wrong: pinned versions that the
+    # unconstrained repair step upgraded, and git packages that never landed.
+    "$SOLVER" env list 2>/dev/null | grep -qE "^${ENV_NAME}[[:space:]]" ||
+        die "env '${ENV_NAME}' does not exist -- run without --repair-pins to build it"
+    PY="$("$SOLVER" run -n "$ENV_NAME" python -c 'import sys; print(sys.executable)' 2>/dev/null)"
+    [[ -n "$PY" ]] || die "cannot locate python in ${ENV_NAME}"
+    echo "=============================================================="
+    echo "repairing ${ENV_NAME} in place"
+    echo "=============================================================="
+    echo "  python: $PY"
+    echo
+
+    PIPREQ="$(mktemp -t scplus-pip.XXXXXX)"
+    trap 'rm -f "$PIPREQ" "${PIPREQ}.pypi" "${PIPREQ}.git" "${PIPREQ}.cons"' EXIT
+    python3 - "$YML" "$PIPREQ" <<'PYEOF'
+import sys, yaml
+d = yaml.safe_load(open(sys.argv[1]))
+pip = [x for y in d["dependencies"] if isinstance(y, dict) for x in y.get("pip", [])]
+open(sys.argv[2], "w").write("\n".join(pip) + "\n")
+PYEOF
+    grep -v "git+" "$PIPREQ" > "${PIPREQ}.pypi"
+    grep    "git+" "$PIPREQ" > "${PIPREQ}.git"
+    cat "${PIPREQ}.pypi" "$REPO_ROOT/$CONS" > "${PIPREQ}.cons"
+
+    log "[1/3] forcing the pinned versions back (they are the spec)"
+    export PIP_CONSTRAINT="${PIPREQ}.cons"
+    "$PY" -m pip install --no-cache-dir --disable-pip-version-check \
+        --force-reinstall --no-deps -r "${PIPREQ}.pypi"
+    P1=$?
+
+    log "[2/3] reinstalling the git packages, --no-deps"
+    "$PY" -m pip install --no-cache-dir --no-deps --disable-pip-version-check \
+        --force-reinstall -r "${PIPREQ}.git"
+    P2=$?
+
+    log "[3/3] repairing what pip check now reports, WITHIN the pins"
+    M="$("$PY" -m pip check 2>&1 |
+        sed -nE 's/^.* requires ([A-Za-z0-9._-]+), which is not installed\.$/\1/p' |
+        sort -u | tr '\n' ' ')"
+    if [[ -n "${M// /}" ]]; then
+        log "  missing: ${M}"
+        "$PY" -m pip install --no-cache-dir --disable-pip-version-check ${M}
+    else
+        log "  nothing missing"
+    fi
+    P3=$?
+
+    echo
+    log "re-verifying"
+    "$PY" - "$PIPREQ" <<'PYEOF'
+import subprocess, sys
+want = {}
+for line in open(sys.argv[1]):
+    line = line.strip()
+    if "==" in line and "git+" not in line:
+        n, v = line.split("==", 1)
+        want[n.strip().lower().replace("_", "-")] = v.strip()
+have = {}
+out = subprocess.run([sys.executable, "-m", "pip", "list", "--format=freeze",
+                      "--disable-pip-version-check"],
+                     capture_output=True, text=True).stdout
+for line in out.splitlines():
+    if "==" in line:
+        n, v = line.split("==", 1)
+        have[n.strip().lower().replace("_", "-")] = v.strip()
+drift = [(n, w, have.get(n, "MISSING")) for n, w in sorted(want.items())
+         if have.get(n) != w]
+if drift:
+    print(f"  STILL DRIFTED: {len(drift)} of {len(want)}")
+    for n, w, h in drift:
+        print(f"    {n:<22} spec {w:<16} installed {h}")
+    sys.exit(3)
+print(f"  all {len(want)} pinned versions match the spec")
+PYEOF
+    D=$?
+    for mod in pycisTopic pycistarget scenicplus loomxpy pyscenic; do
+        "$PY" -c "import $mod" 2>/dev/null && echo "  ok      import ${mod}" ||
+            { echo "  MISSING import ${mod}"; D=1; }
+    done
+    if [[ -x "${PY%/python}/scenicplus" ]]; then
+        echo "  ok      ${PY%/python}/scenicplus exists"
+    else
+        echo "  MISSING ${PY%/python}/scenicplus"; D=1
+    fi
+    RC=$(( P1 != 0 ? P1 : (P2 != 0 ? P2 : (P3 != 0 ? P3 : D)) ))
+    echo
+    echo "=============================================================="
+    (( RC == 0 )) && echo "repair complete -- smoke test, then sbatch." ||
+        echo "repair INCOMPLETE (exit $RC) -- read the drift/import lines above."
+    echo "=============================================================="
+    exit "$RC"
+fi
 
 echo "=============================================================="
 echo "building the ${ENV_NAME} env"
@@ -175,7 +276,7 @@ PYEOF
 # Build the conda side WITHOUT the pip section: passing the yml directly would
 # let mamba run pip once, with isolation, which is the failure.
 CONDAYML="$(mktemp -t scplus-conda.XXXXXX).yml"
-trap 'rm -f "$PIPREQ" "${PIPREQ}.pypi" "${PIPREQ}.git" "$CONDAYML"' EXIT
+trap 'rm -f "$PIPREQ" "${PIPREQ}.pypi" "${PIPREQ}.git" "${PIPREQ}.cons" "$CONDAYML"' EXIT
 python3 - "$YML" "$CONDAYML" <<'PYEOF'
 import sys, yaml
 spec, out = sys.argv[1], sys.argv[2]
@@ -282,10 +383,20 @@ MISSING="$("$PY" -m pip check 2>&1 |
     sort -u | tr '\n' ' ')"
 if [[ -n "${MISSING// /}" ]]; then
     log "  missing: ${MISSING}"
-    # No pins here: these are transitive requirements the upstream packages
-    # declare without pinning, so pip resolves them. The pinned list from B1 is
-    # already installed and constrains what pip may pick.
-    "$PY" -m pip install --no-cache-dir --disable-pip-version-check ${MISSING}
+    # CONSTRAIN THE REPAIR TO OUR PINS. Installed-already is NOT a constraint:
+    # pip will happily upgrade an installed package to satisfy a new one. On the
+    # first real run this step took pandas 1.5.0 -> 3.0.5, matplotlib
+    # 3.6.3 -> 3.11.1, polars 0.20.13 -> 1.44.0, statsmodels and tqdm too --
+    # a pandas MAJOR version jump against a spec that pins 1.5.0.
+    #
+    # PIP_CONSTRAINT holds them: verified that an explicit `pip install
+    # --upgrade pandas` under a `pandas==1.5.3` constraint leaves the installed
+    # version alone. If a missing package genuinely cannot coexist with the
+    # pins, pip now fails here and says so, instead of silently rewriting the
+    # environment the spec describes.
+    cat "${PIPREQ}.pypi" "$REPO_ROOT/$CONS" > "${PIPREQ}.cons"
+    PIP_CONSTRAINT="${PIPREQ}.cons" \
+        "$PY" -m pip install --no-cache-dir --disable-pip-version-check ${MISSING}
     R_RC=$?
     log "  re-checking"
     "$PY" -m pip check || log "  pip check still reports issues -- read them above"
@@ -320,13 +431,46 @@ if drift:
     print(f"  {len(drift)} of {len(want)} pinned versions differ from the spec:")
     for n, w, h in drift:
         print(f"    {n:<22} spec {w:<16} installed {h}")
-    print("  The env may still work, but it is no longer the pinned "
-          "configuration.")
+    print("  The env is NOT the pinned configuration. Repair with:")
+    print("    bash 03_pipeline/create_env.sh --repair-pins")
+    sys.exit(3)
 else:
     print(f"  all {len(want)} pinned versions match the spec")
 PYEOF
+DRIFT_RC=$?
+
+# The git packages install --no-deps, so nothing verifies they arrived. And the
+# console script is the thing the pipeline actually invokes: scenicplus's
+# pyproject.toml declares [project.scripts] scenicplus =
+# "scenicplus.cli.scenicplus:main", so `scenicplus --help` failing means the
+# package did not install even if pass B exited 0.
+log "verifying the git packages and the CLI"
+CLI_RC=0
+for mod in pycisTopic pycistarget scenicplus loomxpy pyscenic; do
+    if "$PY" -c "import $mod" 2>/dev/null; then
+        v="$("$PY" -c "import $mod,sys; print(getattr($mod,'__version__','?'))" 2>/dev/null)"
+        echo "  ok      import ${mod}  (${v})"
+    else
+        echo "  MISSING import ${mod}"
+        CLI_RC=1
+    fi
+done
+if "$PY" -m scenicplus --help >/dev/null 2>&1 ||
+   "${PY%/python}/scenicplus" --help >/dev/null 2>&1; then
+    echo "  ok      scenicplus CLI responds"
+else
+    echo "  MISSING scenicplus CLI -- 'scenicplus --help' will not work."
+    echo "          The entry point IS declared upstream, so this means the"
+    echo "          package itself is absent or its console script was not"
+    echo "          written. Check: ${PY%/python}/scenicplus"
+    CLI_RC=1
+fi
 
 B_RC=$(( B1_RC != 0 ? B1_RC : (B2_RC != 0 ? B2_RC : R_RC) ))
+# Drift and a missing CLI are build FAILURES, not notes: an env with pandas 3
+# where the spec pins 1.5.0 will fail somewhere inside a multi-hour pipeline
+# run instead of here.
+(( B_RC == 0 )) && B_RC=$(( DRIFT_RC != 0 ? DRIFT_RC : CLI_RC ))
 
 RC=$(( A_RC != 0 ? A_RC : B_RC ))
 
