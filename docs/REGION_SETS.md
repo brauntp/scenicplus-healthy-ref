@@ -80,6 +80,66 @@ positives** — the weak-shift regions correctly excluded. The tool finds the
 lowest threshold that neither caps nor empties a group, and says which
 direction each error goes.
 
+## The sweep ran, and no shared threshold works
+
+Real sweep on `01_atac/dar_stats.npz` (21 groups, 393,832 regions, FDR 0.05):
+
+| min_log2fc | min/group | median | max | capped |
+|---|---|---|---|---|
+| 0.25 | 9,796 | 75,548 | 264,353 | 20 |
+| 1.00 | 8,156 | 45,881 | 145,252 | 17 |
+| 1.50 | 2,811 | 24,540 | 64,028 | 14 |
+| 2.00 | **473** | 13,247 | 34,341 | 5 |
+| 3.00 | **7** | 1,818 | 11,700 | 0 |
+
+**The cap "clears" at 3.00 only because the thin groups collapse.** At that
+threshold the smallest group has 7 regions. The spread between smallest and
+largest never closes — 27× at 0.25, 1,671× at 3.00 — because the groups' effect
+size distributions genuinely differ that much.
+
+### The missing constraint: how small is too small
+
+`ctx_auc_threshold` is 0.005, so cisTarget integrates its recovery curve over
+the top 0.5% of the 1,837,304-region ranking — the top 9,186 ranks. A region set
+of size N puts N × 0.005 regions in that window under the null:
+
+| set size | expected in AUC window | usable? |
+|---|---|---|
+| 7 | 0.04 | no — statistic undefined in practice |
+| 473 | 2.4 | no — NES 3.0 is noise at this count |
+| 2,811 | 14.1 | yes |
+| 20,000 | 100.0 | yes |
+
+So ~2,000 regions is where the recovery curve stabilises. The sweep's original
+`zero` column only counted sets at exactly 0, which meant a 7-region set was
+reported as healthy. It now counts sets below `--min-usable` (default 2,000) and
+labels the column **starved**.
+
+Reading the real table against that floor: 2.00 fails both ways (473 is
+unusable, 5 groups still cap) and 3.00 is worse. There is no threshold where
+nothing caps and every group stays usable.
+
+### The alternative: equal-N per group
+
+`--top-n N` takes the top N FDR-passing regions per group by effect size,
+ignoring `--min-log2fc` entirely. Every group gets the same number, so no group
+starves and none caps.
+
+```bash
+python 01_cistopic/choose_dar_threshold.py --stats 01_atac/dar_stats.npz \
+    --top-n 5000 --out-dir 01_atac/region_sets --write
+```
+
+**Stromal's 9,796 is the binding constraint** — it is the smallest FDR-passing
+count at 0.25, so any `--top-n` up to that is feasible for all 21 groups.
+
+**What equal-N costs, stated plainly.** Set membership becomes rank-based rather
+than effect-based: a region admitted in one group would be rejected in another,
+because the implied log2fc cutoff differs per group. The tool prints that span
+so the cost is visible. In exchange, every set is the same size, which makes NES
+values comparable across groups — under a shared threshold they are not, since a
+20,000-region set and a 473-region set have very different null distributions.
+
 ## What this does not settle
 
 The right threshold on the real data is an empirical question the sweep answers,

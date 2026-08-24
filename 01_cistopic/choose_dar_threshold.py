@@ -74,6 +74,21 @@ def main():
                     help=".npz from region_sets_from_metacells.py --dump-stats")
     ap.add_argument("--fdr", type=float, default=0.05)
     ap.add_argument("--max-regions", type=int, default=20_000)
+    ap.add_argument("--min-usable", type=int, default=2_000,
+                    help="a region set smaller than this is reported as "
+                         "STARVED, not merely small (default 2000). cisTarget's "
+                         "AUC window is ctx_auc_threshold (0.005) of the "
+                         "1,837,304-region database, so a set of N regions puts "
+                         "N*0.005 regions in that window under the null: 7 "
+                         "regions gives 0.04 expected and 473 gives 2.4, at "
+                         "which point a NES of 3.0 is noise. ~2,000 is where "
+                         "the recovery curve stabilises.")
+    ap.add_argument("--top-n", type=int, default=None,
+                    help="ignore --min-log2fc and take the top N regions per "
+                         "group by effect size (FDR still applied). Use when no "
+                         "single threshold serves every group -- which is the "
+                         "usual outcome when effect-size distributions differ "
+                         "by more than ~20x across groups.")
     ap.add_argument("--grid", type=float, nargs="+",
                     default=[0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0])
     ap.add_argument("--min-log2fc", type=float, default=None,
@@ -106,7 +121,7 @@ def main():
 
     sig = q <= args.fdr
     print(f"{'min_log2fc':>11}{'median/grp':>12}{'min':>9}{'max':>9}"
-          f"{'capped':>8}{'zero':>6}{'total BED':>12}{'union % peaks':>15}")
+          f"{'capped':>8}{'starved':>9}{'total BED':>12}{'union % peaks':>15}")
     print("-" * 78)
     table = []
     for t in args.grid:
@@ -117,11 +132,12 @@ def main():
         row = dict(min_log2fc=float(t), median=int(np.median(n)),
                    min=int(n.min()), max=int(n.max()),
                    n_capped=int((n > args.max_regions).sum()),
-                   n_zero=int((n == 0).sum()), total=int(kept.sum()),
+                   n_zero=int((n < args.min_usable).sum()),
+                   total=int(kept.sum()),
                    union_frac=float(union / n_reg))
         table.append(row)
         print(f"{t:>11.2f}{row['median']:>12,}{row['min']:>9,}{row['max']:>9,}"
-              f"{row['n_capped']:>8}{row['n_zero']:>6}{row['total']:>12,}"
+              f"{row['n_capped']:>8}{row['n_zero']:>9}{row['total']:>12,}"
               f"{row['union_frac']:>14.1%}")
 
     print()
@@ -256,6 +272,26 @@ def main():
             print("  the effect-size distribution -- inspect the dump directly "
                   "before proceeding.")
 
+    if args.top_n is not None:
+        print()
+        print(f"  --top-n {args.top_n:,}: equal-sized sets, no shared threshold.")
+        n_avail = (sig.sum(1))
+        short = [(groups[i], int(n_avail[i]))
+                 for i in np.flatnonzero(n_avail < args.top_n)]
+        print(f"    groups with fewer than {args.top_n:,} FDR-passing regions: "
+              f"{len(short)}")
+        for g, n in short[:8]:
+            print(f"      {g:<26}{n:>8,}")
+        eff_at = np.array([np.sort(eff[i][sig[i]])[::-1][
+            min(args.top_n, int(n_avail[i])) - 1] if n_avail[i] else np.nan
+            for i in range(n_grp)])
+        print(f"    implied log2fc cutoff spans "
+              f"{np.nanmin(eff_at):.2f} to {np.nanmax(eff_at):.2f} across groups")
+        print("    -- that spread is the cost: a region admitted in one group "
+              "would be")
+        print("       rejected in another, so set membership is rank-based, not "
+              "effect-based.")
+
     if not args.write:
         print()
         print("  (sweep only -- pass --min-log2fc T --out-dir DIR --write to "
@@ -263,8 +299,10 @@ def main():
         print("=" * 78)
         return
 
-    if args.min_log2fc is None or args.out_dir is None:
-        sys.exit("ERROR: --write needs both --min-log2fc and --out-dir")
+    if args.out_dir is None:
+        sys.exit("ERROR: --write needs --out-dir")
+    if args.min_log2fc is None and args.top_n is None:
+        sys.exit("ERROR: --write needs either --min-log2fc T or --top-n N")
 
     outdir = args.out_dir / args.family
     outdir.mkdir(parents=True, exist_ok=True)
@@ -279,11 +317,17 @@ def main():
     print()
     summary = []
     for i, g in enumerate(groups):
-        sel = sig[i] & (eff[i] >= args.min_log2fc)
-        idx = np.flatnonzero(sel)
-        capped = idx.size > args.max_regions
-        if capped:
-            idx = idx[np.argsort(-eff[i][idx])[:args.max_regions]]
+        if args.top_n is not None:
+            idx = np.flatnonzero(sig[i])
+            capped = False
+            if idx.size > args.top_n:
+                idx = idx[np.argsort(-eff[i][idx])[:args.top_n]]
+        else:
+            sel = sig[i] & (eff[i] >= args.min_log2fc)
+            idx = np.flatnonzero(sel)
+            capped = idx.size > args.max_regions
+            if capped:
+                idx = idx[np.argsort(-eff[i][idx])[:args.max_regions]]
         idx = idx[np.lexsort((start[idx], chrom[idx]))]
         safe = re.sub(r"[^0-9A-Za-z_.-]+", "_", g)
         path = outdir / f"{safe}.bed"
@@ -298,6 +342,7 @@ def main():
 
     (args.out_dir / f"{args.family}.summary.json").write_text(
         json.dumps(dict(source=str(args.stats), min_log2fc=args.min_log2fc,
+                        top_n=args.top_n, min_usable=args.min_usable,
                         fdr=args.fdr, max_regions=args.max_regions,
                         rewritten_by="01_cistopic/choose_dar_threshold.py",
                         sets=summary), indent=2))
