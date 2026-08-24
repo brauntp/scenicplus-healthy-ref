@@ -435,6 +435,12 @@ house-style path where the env is activated before `sbatch` and inherited: an
 inherited env brings `LD_LIBRARY_PATH` only if it was already set at submit
 time, so the job asserts it rather than assuming.
 
+Re-running `fix_cxxabi.sh` after the hook is in place is safe and worth doing
+once: it takes the "clean as-is" branch and *rewrites* the hook, so a hook
+written by an earlier version of the script (carrying the superseded
+wheel-RPATH explanation in its comment) is replaced with the correct one. The
+hook's behaviour was always right; only its comment was wrong.
+
 This is exactly the failure class flagged in the section below: `sorted-nearest`
 is one of the 187 uncovered lock pins.
 
