@@ -354,6 +354,28 @@ bash 03_pipeline/create_env.sh --repair-pins
 That force-reinstalls the pinned versions under constraint, reinstalls the git
 packages, repairs what `pip check` reports within the pins, and re-verifies.
 
+### `--repair-pins` v1 deleted packages — read this before using an old checkout
+
+The first version of the repair ran `pip install --force-reinstall --no-deps -r
+<all 34 pins>`. That was wrong twice:
+
+- It omitted `--no-build-isolation`, and five of those 34 are the wheel-less sdists. On pip 26 they cannot build with isolation on — the very failure this wrapper exists to avoid — so the step could not succeed as written.
+- `--force-reinstall` **uninstalls each package before reinstalling it.** A failure partway through the list leaves the already-processed packages *removed*.
+
+That is what produced the contradictory report: 33 of 34 pins absent *and* the
+git packages still importing. The diagnostic settled it — `mudata`, `sklearn`
+and `matplotlib` appeared in both the ABSENT list and the import-FAIL list, so
+they were genuinely gone, not victims of damaged metadata. The git packages
+survived because they were never in the list being force-reinstalled.
+
+**The repair now touches only what is actually wrong.** It reads the installed
+versions, computes the drifted set, splits it (sdists get
+`--no-build-isolation`), and installs with no `--force-reinstall` at all — a
+plain pinned install downgrades an installed package and leaves everything else
+alone. The git packages are reinstalled only if one of them fails to import.
+Verified on a deliberately damaged venv: the drifted pin downgraded, the absent
+sdist built, distribution count went **up**, residual drift empty.
+
 ### When the env's own reports contradict each other
 
 `--repair-pins` once reported **"STILL DRIFTED: 33 of 34 ... installed

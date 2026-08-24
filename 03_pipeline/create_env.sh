@@ -165,7 +165,7 @@ if (( REPAIR )); then
     fi
 
     PIPREQ="$(mktemp -t scplus-pip.XXXXXX)"
-    trap 'rm -f "$PIPREQ" "${PIPREQ}-pypi" "${PIPREQ}-gitreqs" "${PIPREQ}-cons" "${PIPREQ}-log1"' EXIT
+    trap 'rm -f "$PIPREQ" "${PIPREQ}-pypi" "${PIPREQ}-gitreqs" "${PIPREQ}-cons"' EXIT
     python3 - "$YML" "$PIPREQ" <<'PYEOF'
 import sys, yaml
 d = yaml.safe_load(open(sys.argv[1]))
@@ -176,30 +176,102 @@ PYEOF
     grep    "git+" "$PIPREQ" > "${PIPREQ}-gitreqs"
     cat "${PIPREQ}-pypi" "$REPO_ROOT/$CONS" > "${PIPREQ}-cons"
 
-    log "[1/3] forcing the pinned versions back (they are the spec)"
-    export PIP_CONSTRAINT="${PIPREQ}-cons"
-    # --force-reinstall --no-deps on 34 packages is noisy and its outcome is
-    # what everything after depends on, so tee it and report the tail. On the
-    # first run this step's result was invisible: the log showed only the
-    # verification, which then reported 33 of 34 missing.
-    "$PY" -m pip install --no-cache-dir --disable-pip-version-check \
-        --force-reinstall --no-deps -r "${PIPREQ}-pypi" 2>&1 |
-        tee "${PIPREQ}-log1" | tail -3
-    P1=${PIPESTATUS[0]}
-    log "  step 1 exit ${P1}: $(grep -c '^Successfully installed' "${PIPREQ}-log1") \
-success line(s), $(grep -ci '^ERROR' "${PIPREQ}-log1") error line(s)"
-    if (( P1 != 0 )); then
-        echo "  first errors from step 1:"
-        grep -i "^ERROR" "${PIPREQ}-log1" | head -5 | sed 's/^/    /'
-        die "step 1 failed -- the pins were not restored, so nothing after this
-     is meaningful. Full log: ${PIPREQ}-log1 (kept for this run only;
-     re-run redirecting output to a file if you need to keep it)."
+    # WHY THIS IS NO LONGER --force-reinstall ON ALL 34
+    # -------------------------------------------------
+    # The first version ran `pip install --force-reinstall --no-deps -r <all 34
+    # pins>`. That was wrong twice over:
+    #
+    #   * It omitted --no-build-isolation, and five of those 34 are wheel-less
+    #     sdists (pybedtools, pyranges, pyrle, tspex, MACS2). On pip 26 they
+    #     cannot build with isolation on -- the same failure this whole wrapper
+    #     exists to avoid -- so the step could not succeed as written.
+    #   * --force-reinstall uninstalls each package before reinstalling it. A
+    #     failure partway through a 34-package list therefore leaves the
+    #     already-processed ones REMOVED. After that run, mudata, sklearn and
+    #     matplotlib no longer imported and 33 of 34 pins reported absent.
+    #
+    # A repair should touch only what is actually wrong. So: read the current
+    # state, act on the difference, and give the sdists the flag they need.
+    log "[1/3] finding which pins actually drifted"
+    DRIFTED="$("$PY" - "$PIPREQ" <<'PYEOF'
+import sys
+from importlib.metadata import distributions, version, PackageNotFoundError
+want = {}
+for line in open(sys.argv[1]):
+    line = line.strip()
+    if "==" in line and "git+" not in line:
+        n, v = line.split("==", 1)
+        want[n.strip()] = v.strip()
+norm = lambda t: t.strip().lower().replace("_", "-")
+meta = {}
+for d in distributions():
+    nm = d.metadata["Name"]
+    if nm:
+        meta[norm(nm)] = d.version
+out = []
+for name, w in want.items():
+    got = meta.get(norm(name))
+    if got is None:
+        try:
+            got = version(name)
+        except PackageNotFoundError:
+            got = None
+    if got != w:
+        out.append(f"{name}=={w}")
+print(" ".join(out))
+PYEOF
+)"
+    if [[ -z "${DRIFTED// /}" ]]; then
+        log "  nothing drifted -- the pins already match the spec"
+    else
+        n_drift=$(wc -w <<<"$DRIFTED")
+        log "  ${n_drift} to reinstall"
+        # Split them: the wheel-less sdists need --no-build-isolation, the rest
+        # do not care. No --force-reinstall -- a plain pinned install downgrades
+        # an installed package and leaves everything else alone (verified).
+        SD=(); WH=()
+        for spec in $DRIFTED; do
+            base="$(cut -d= -f1 <<<"$spec" | tr '[:upper:]' '[:lower:]')"
+            case "$base" in
+                pybedtools|pyranges|pyrle|tspex|macs2) SD+=("$spec") ;;
+                *)                                    WH+=("$spec") ;;
+            esac
+        done
+        export PIP_CONSTRAINT="${PIPREQ}-cons"
+        P1=0
+        if (( ${#WH[@]} )); then
+            log "  wheels (${#WH[@]}): ${WH[*]}"
+            "$PY" -m pip install --no-cache-dir --disable-pip-version-check \
+                "${WH[@]}" || P1=$?
+        fi
+        if (( ${#SD[@]} )); then
+            log "  sdists (${#SD[@]}), --no-build-isolation: ${SD[*]}"
+            "$PY" -m pip install --no-cache-dir --no-build-isolation \
+                --disable-pip-version-check "${SD[@]}" || P1=$?
+        fi
+        if (( P1 != 0 )); then
+            die "pin reinstall failed (exit ${P1}). Nothing was force-removed,
+     so the env is no worse than before this command. Read the pip error:
+     if a pin genuinely cannot be satisfied, that pin has to move, and a
+     clean rebuild is the honest fix."
+        fi
     fi
+    P1=0
 
-    log "[2/3] reinstalling the git packages, --no-deps"
-    "$PY" -m pip install --no-cache-dir --no-deps --disable-pip-version-check \
-        --force-reinstall -r "${PIPREQ}-gitreqs"
-    P2=$?
+    log "[2/3] git packages -- reinstalling only those that do not import"
+    MISSING_GIT=()
+    for mod in pycisTopic pycistarget scenicplus loomxpy pyscenic; do
+        "$PY" -c "import $mod" >/dev/null 2>&1 || MISSING_GIT+=("$mod")
+    done
+    if (( ${#MISSING_GIT[@]} == 0 )); then
+        log "  all five import -- leaving them alone"
+        P2=0
+    else
+        log "  not importing: ${MISSING_GIT[*]} -- reinstalling all five"
+        "$PY" -m pip install --no-cache-dir --no-deps \
+            --disable-pip-version-check -r "${PIPREQ}-gitreqs"
+        P2=$?
+    fi
 
     log "[3/3] repairing what pip check now reports, WITHIN the pins"
     M="$("$PY" -m pip check 2>&1 |
