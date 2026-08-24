@@ -5,7 +5,7 @@
 #
 # THE PROBLEM
 # -----------
-# smoke_test.sh reported, for six of eleven pipeline stages:
+# smoke_test.sh reported, for seven of eleven pipeline stages:
 #     ImportError: /lib64/libstdc++.so.6: version `CXXABI_1.3.15' not found
 #
 # PyPI wheels for the compiled packages in this stack (sorted-nearest, ncls,
@@ -90,7 +90,7 @@ else
 fi
 echo
 
-echo "-- re-testing the six stages that failed ------------------------"
+echo "-- re-testing the seven stages that failed ----------------------"
 FAIL=0
 for mod in pycistarget.motif_enrichment_cistarget \
            pycistarget.motif_enrichment_dem \

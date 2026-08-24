@@ -356,11 +356,30 @@ packages, repairs what `pip check` reports within the pins, and re-verifies.
 
 ### `CXXABI_1.3.15 not found` — the smoke test's first real catch
 
-Six of eleven stages failed at import with:
+Seven of eleven stages failed at import with:
 
 ```
 ImportError: /lib64/libstdc++.so.6: version `CXXABI_1.3.15' not found
 ```
+
+| stage | module | result |
+|---|---|---|
+| motif_enrichment_cistarget | `pycistarget.motif_enrichment_cistarget` | FAIL |
+| motif_enrichment_dem | `pycistarget.motif_enrichment_dem` | FAIL |
+| cistarget_io | `pycistarget.input_output` | FAIL |
+| cistarget_result | `pycistarget.motif_enrichment_result` | FAIL |
+| region_to_gene | `scenicplus.grn_builder.gsea_approach` | FAIL |
+| eregulon_assembly | `scenicplus.grn_builder.modules` | FAIL |
+| AUCell | `scenicplus.eregulon_enrichment` | FAIL |
+| tf_to_gene | `arboreto.algo` | ok |
+| cli_entrypoint | `scenicplus.cli.scenicplus` | ok |
+| snakemake_driver | `snakemake` | ok |
+| data_wrangling | `scenicplus.data_wrangling.adata_cistopic_wrangling` | ok |
+
+Every functional check in the smoke test's section 3 also passed, including the
+`pyarrow` feather round-trip — so pyarrow is fine and this is specific to the
+`pyranges`-adjacent compiled chain. That split is why a per-stage import matrix
+beats a single "does it import" check.
 
 Not a Python version problem. PyPI wheels for the compiled packages in this
 stack (`sorted-nearest`, `ncls`, `pyrle` and their kin, reached through
@@ -382,7 +401,7 @@ bash 03_pipeline/fix_cxxabi.sh     # seconds
 ```
 
 It reports the system and env ABI levels, installs the two packages, and
-re-imports the exact six stages that failed. If they still fail, two causes
+re-imports the exact seven stages that failed. If they still fail, two causes
 remain and `03_pipeline/diagnose_cxxabi.sh` distinguishes them: the env has a
 new enough library but `$LD_LIBRARY_PATH` puts something ahead of it, or a wheel
 wants an ABI newer than conda-forge provides — in which case pinning that

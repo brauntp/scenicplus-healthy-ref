@@ -2,7 +2,7 @@
 # =============================================================================
 # Which compiled extension needs a newer libstdc++ than the system provides?
 #
-# smoke_test.sh reported, for six of eleven pipeline stages:
+# smoke_test.sh reported, for seven of eleven pipeline stages:
 #     ImportError: /lib64/libstdc++.so.6: version `CXXABI_1.3.15' not found
 #                  (required by /home/groups/Maxs...   <- path truncated
 #
