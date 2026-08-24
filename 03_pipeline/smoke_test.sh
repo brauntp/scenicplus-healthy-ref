@@ -39,8 +39,20 @@ echo
 echo "-- [1] the CLI the pipeline invokes -------------------------------"
 if "${CONDA_PREFIX}/bin/scenicplus" --help >/dev/null 2>&1; then
     echo "  ok    scenicplus --help"
-    echo "  subcommands: $("${CONDA_PREFIX}/bin/scenicplus" --help 2>&1 |
-        grep -oE '^\{[a-z_,]+\}' | head -1)"
+    # Argparse prints the subcommand list inside an indented "positional
+    # arguments:" block, not at column 0 -- an anchored ^\{...\} pattern matches
+    # nothing and printed an empty line here on the first real run.
+    SUBS="$("${CONDA_PREFIX}/bin/scenicplus" --help 2>&1 |
+            grep -oE '\{[a-z_,]{4,}\}' | head -1 | tr -d '{}')"
+    echo "  subcommands: ${SUBS:-<none parsed; argparse layout differs>}"
+    # The DAG drives these two; if either is absent the CLI is not the one
+    # this pipeline was written against.
+    for want in prepare_data grn_inference; do
+        case ",${SUBS}," in
+            *",${want},"*) printf "  ok    subcommand %s\n" "$want" ;;
+            *) printf "  WARN  subcommand %s not listed\n" "$want" ;;
+        esac
+    done
 else
     echo "  FAIL  scenicplus --help"
     "${CONDA_PREFIX}/bin/scenicplus" --help 2>&1 | tail -5 | sed 's/^/        /'
