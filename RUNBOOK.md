@@ -354,6 +354,30 @@ bash 03_pipeline/create_env.sh --repair-pins
 That force-reinstalls the pinned versions under constraint, reinstalls the git
 packages, repairs what `pip check` reports within the pins, and re-verifies.
 
+### Reading a `--keep-going` run: the log's tail lies
+
+The run that got furthest ended with `region_to_gene` logging `Done!` and
+`Finished job 9` — and still exited 1, with **two** `oom_kill` events. The tail
+looked healthy because `run_pipeline.sh` passes `--keep-going`: a rule dies,
+independent branches carry on, and a *later* success prints after the failure.
+
+So `3 of 12 steps (25%) done` is not "25% of the pipeline exists". It counts
+steps that **ran in that invocation** — the annotation builder had already
+satisfied `download_genome_annotations` (13 rules → 12, confirming it worked),
+and several rules from earlier runs were already satisfied and so not counted.
+`pipeline_status.py` answers the actual question by stat-ing the outputs.
+
+Three things it now reports, each of which took a measurement:
+
+- **Which rule failed, and whether it was OOM.** The job's `.err` shows the traceback but not always the owning rule; the `.out` shows neither. Snakemake's own log has `Error in rule <name>:` with the shell exit code — verified against a real failing workflow. Exit **137** is SIGKILL, which under SLURM means the OOM killer.
+- **Every failure, not the last.** Under `--keep-going` one run can fail several rules. Snakemake also repeats each failure in an end-of-run summary where no exit code precedes it, so a naive scan reports the same rule twice, once with `exit None` — deduplicated, preferring the entry that carries the code.
+- **That the heavy rules serialise.** Verified against snakemake directly with two `threads: 16` rules at `--cores 16`: they run one at a time. So `--mem` sizes the largest single rule, not a sum — and the OOM'd rule named above is the one to size for.
+
+Two rules can OOM where `region_to_gene` survived on the same allocation,
+because `region_to_gene` slices to one gene's search space (~38 peaks) per task
+while `tf_to_gene` regresses every gene against every TF over the full
+expression matrix.
+
 ### The DAG ran: BioMart failed, and the job OOM-killed
 
 First submission that got past path validation. Two independent failures.

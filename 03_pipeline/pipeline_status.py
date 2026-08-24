@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import shutil
 import sys
 import time
@@ -68,6 +69,57 @@ def age(mtime: float) -> str:
     if d < 86400:
         return f"{d/3600:.1f}h ago"
     return f"{d/86400:.1f}d ago"
+
+
+
+def last_failure(workdir: Path) -> dict | None:
+    """Name the rule that failed, from snakemake's own log.
+
+    The job's .err file shows the traceback but not always which RULE owned it,
+    and the .out file shows neither (snakemake writes to stderr). Snakemake's own
+    log records `Error in rule <name>:` plus the shell exit code, which is the
+    only place the two are stated together.
+
+    Exit code 137 = SIGKILL = the OOM killer in practice. Distinguishing that
+    from an ordinary non-zero exit matters, because the remedy is different:
+    more memory versus a real bug.
+    """
+    logs = sorted((workdir / ".snakemake" / "log").glob("*.snakemake.log"),
+                  key=lambda p: p.stat().st_mtime, reverse=True)
+    if not logs:
+        return None
+    txt = logs[0].read_text(errors="replace")
+    # run_pipeline.sh passes --keep-going, so ONE run can fail several rules on
+    # independent branches -- and a later success (region_to_gene finishing
+    # after another rule died) makes the tail of the log look healthy. Collect
+    # every failure, paired with the exit code reported just before it.
+    lines = txt.splitlines()
+    fails = []
+    pending_code = None
+    for line in lines:
+        m = re.search(r"returned non-zero exit status (\d+)", line)
+        if m:
+            pending_code = int(m.group(1))
+        if line.startswith("Error in rule "):
+            fails.append({"rule": line[len("Error in rule "):].rstrip(":").strip(),
+                          "exit": pending_code,
+                          "oom": pending_code in (137, 9)})
+            pending_code = None
+    # Snakemake repeats each failure in an end-of-run summary, where no exit
+    # code precedes it -- so the same rule appears twice, once with a code and
+    # once with None. Keep one entry per rule, preferring the one that carries
+    # the code.
+    dedup: dict[str, dict] = {}
+    for f in fails:
+        prev = dedup.get(f["rule"])
+        if prev is None or (prev["exit"] is None and f["exit"] is not None):
+            dedup[f["rule"]] = f
+    fails = list(dedup.values())
+
+    # Snakemake's own tally, which counts only rules that COMPLETED.
+    m = re.findall(r"(\d+) of (\d+) steps \((\d+)%\) done", txt)
+    tally = m[-1] if m else None
+    return {"log": logs[0], "fails": fails, "tally": tally}
 
 
 def main() -> None:
@@ -144,6 +196,42 @@ def main() -> None:
                 print(f"              {k:<34} {'--':>12}  not in config")
             else:
                 print(f"              {nm:<34} {'absent':>12}")
+    print()
+
+    print("-- last failure, from snakemake's own log --------------------------")
+    fail = last_failure(workdir)
+    if fail is None:
+        print("  no snakemake log under .snakemake/log/ -- no run has started here.")
+    else:
+        print(f"  log : {fail['log']}")
+        if fail["tally"]:
+            d, t, pct = fail["tally"]
+            print(f"  snakemake's tally: {d} of {t} steps ({pct}%) COMPLETED in "
+                  f"that run")
+            print(f"  (this counts steps that ran, not outputs that exist -- a")
+            print(f"   rule satisfied before the run started is not counted)")
+        if not fail["fails"]:
+            print("  no 'Error in rule' lines: the last run did not fail at a")
+            print("  rule. It either completed or was killed outright.")
+        else:
+            print()
+            for f in fail["fails"]:
+                oom = "  <- SIGKILL / OOM" if f["oom"] else ""
+                print(f"  FAILED RULE: {f['rule']}   exit {f['exit']}{oom}")
+            if any(f["oom"] for f in fail["fails"]):
+                print()
+                print("  Exit 137 is SIGKILL -- in a SLURM job that is the OOM")
+                print("  killer, and the rules above are what to size --mem for.")
+                print("  Heavy rules are SERIALISED (each declares threads =")
+                print("  n_cpu; verified against snakemake), so --mem covers the")
+                print("  largest single rule, not a sum.")
+            if len(fail["fails"]) > 1:
+                print()
+                print("  MORE THAN ONE rule failed. run_pipeline.sh passes")
+                print("  --keep-going, so independent branches continue after a")
+                print("  failure -- which means a later rule finishing does NOT")
+                print("  mean the run was healthy, and the log's tail can look")
+                print("  clean while an earlier branch is dead.")
     print()
 
     print("-- resume point ----------------------------------------------------")
