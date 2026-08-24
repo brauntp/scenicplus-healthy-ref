@@ -354,6 +354,44 @@ bash 03_pipeline/create_env.sh --repair-pins
 That force-reinstalls the pinned versions under constraint, reinstalls the git
 packages, repairs what `pip check` reports within the pins, and re-verifies.
 
+### `CXXABI_1.3.15 not found` — the smoke test's first real catch
+
+Six of eleven stages failed at import with:
+
+```
+ImportError: /lib64/libstdc++.so.6: version `CXXABI_1.3.15' not found
+```
+
+Not a Python version problem. PyPI wheels for the compiled packages in this
+stack (`sorted-nearest`, `ncls`, `pyrle` and their kin, reached through
+`pyranges`) are built against newer GCC than a RHEL-family login node ships.
+The conda section listed `c-compiler` and `cxx-compiler` — the toolchain for
+*building* — but not `libstdcxx-ng`, the runtime those built extensions *load*.
+With no `libstdc++` under the env prefix, the dynamic linker falls back to the
+system `/lib64` one, and that one is too old.
+
+`environment.yml` now lists `libstdcxx-ng` and `libgcc-ng`; verified the conda
+section still solves at the same 234 packages on linux-64, and that conda-forge
+supplies libstdcxx 16.1.0 — well past the required ABI.
+
+**For an env that already exists**, don't rebuild:
+
+```bash
+conda activate scenicplus
+bash 03_pipeline/fix_cxxabi.sh     # seconds
+```
+
+It reports the system and env ABI levels, installs the two packages, and
+re-imports the exact six stages that failed. If they still fail, two causes
+remain and `03_pipeline/diagnose_cxxabi.sh` distinguishes them: the env has a
+new enough library but `$LD_LIBRARY_PATH` puts something ahead of it, or a wheel
+wants an ABI newer than conda-forge provides — in which case pinning that
+package to scenicplus's own `requirements.txt` version is both the fix and a
+step toward the upstream lock.
+
+This is exactly the failure class flagged in the section below: `sorted-nearest`
+is one of the 187 uncovered lock pins.
+
 ### The env builds, but our spec covers 35 of scenicplus's 222 pins
 
 After a successful build or repair, pip prints a long list of
