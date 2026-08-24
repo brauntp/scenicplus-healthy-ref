@@ -354,6 +354,48 @@ bash 03_pipeline/create_env.sh --repair-pins
 That force-reinstalls the pinned versions under constraint, reinstalls the git
 packages, repairs what `pip check` reports within the pins, and re-verifies.
 
+### A "login-node safe" tool that was not
+
+`size_cistarget_memory.py` was documented as "runs in seconds on a login node."
+Its first version counted motifs with
+
+```python
+pa.ipc.open_file(src).get_batch(i).num_rows          # primary
+pf.read_table(db, columns=[]).num_rows               # "safe" fallback
+```
+
+Measured in a fresh process on a 3.04 GB / 400k-column fixture:
+
+| approach | time | peak RSS |
+|---|---|---|
+| `get_batch(i).num_rows` | 1.43 s | **3341 MB** |
+| `read_table(columns=[])` | 0.82 s | **3508 MB** |
+| `read_table(columns=[one])` | 0.40 s | 251 MB |
+| schema only (gives columns, not rows) | 0.20 s | 148 MB |
+
+Both of the ones I shipped scale with **file size** — they map the whole thing
+resident. On the real 33 GB rankings database that is tens of GB on a shared
+login node. The fallback was *worse* than the primary path, so there was no safe
+route through that function at all.
+
+Fixed two ways. The count now comes from one bounded column read (~131 KB of
+data regardless of file width): 0.40 s, 283 MB on the same fixture, a 12×
+reduction. And `--db` is now opt-in rather than the documented default, because
+the motif count is a fixed property of the motif collection (v10nr_clust =
+32,765) and the script never needed the file. The default path — counting lines
+in the `.bed` files — measures **0.16 s for 21 sets totalling 1.69 M lines**, so
+that was never the slow part.
+
+`slurm/size_cistarget.sbatch` runs it as a batch job for the case where you do
+want `--db` against a database on a cold filesystem.
+
+**The general rule this earned:** "read-only" is not "cheap." A single
+`read_table` or `mudata.read()` on a login node can pull tens of GB resident, and
+the tools in this repo that are genuinely login-node safe say *what* they open —
+`peek_h5mu.py` reads HDF5 metadata only, `peak_overlap_audit.py` reads one
+column, `pipeline_status.py` stats without opening. Any claim of login-node
+safety in this repo should name the bytes it touches.
+
 ### Reading a `--keep-going` run: the log's tail lies
 
 The run that got furthest ended with `region_to_gene` logging `Done!` and

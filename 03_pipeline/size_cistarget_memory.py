@@ -27,7 +27,17 @@ The peak is therefore driven by the LARGEST region sets, not by the total, and
 the lever is `--cpus-per-task` as much as `--mem`. This script reads the real
 .bed files and reports both.
 
-Read-only. Runs in seconds on a login node.
+Read-only, and cheap BY DEFAULT: it counts lines in the .bed files and does
+arithmetic. Nothing here touches the 33 GB database unless you pass --db, and
+even then it is one bounded column read (~131 KB) rather than a full map.
+
+That caveat exists because the first version of this script got it wrong. It
+used `pa.ipc.open_file(...).get_batch(i).num_rows` to count motifs, with
+`read_table(columns=[])` as a "safe" fallback. Measured on a 3.04 GB fixture in
+a fresh process, those peak at 3341 MB and 3508 MB respectively -- they map the
+whole file -- against 251 MB for a single-column read. On the real 33 GB
+rankings database that is tens of GB resident on a shared login node, which is
+exactly the slowness that prompted this fix.
 
 Usage:
     python 03_pipeline/size_cistarget_memory.py \
@@ -54,22 +64,44 @@ def count_bed(p: Path) -> int:
 
 
 def n_motifs_in_db(db: Path) -> int | None:
-    """Row count of the feather = number of motifs. Schema only, no data read."""
+    """Row count of the rankings feather = number of motifs.
+
+    MEASURED, not assumed. Three ways to get this number, on a 3.04 GB / 400k-
+    column fixture in a fresh process:
+
+        approach                    time    peak RSS
+        get_batch(i).num_rows       1.43 s    3341 MB   <- maps the whole file
+        read_table(columns=[])      0.82 s    3508 MB   <- worse
+        read_table(columns=[one])   0.40 s     251 MB   <- bounded
+        schema only                 0.20 s     148 MB   (but gives COLUMNS,
+                                                         not rows)
+
+    The first two scale with FILE SIZE: on the real 33 GB rankings database that
+    is tens of GB resident. This script's earlier version used `get_batch` with
+    `columns=[]` as its "safe" fallback -- both of them the same hazard, which is
+    why the run the user reported took a long time on the login node.
+
+    Reading ONE column is bounded: the schema plus 32,765 int32 values, i.e.
+    ~131 KB of data regardless of how wide the file is.
+    """
     try:
-        import pyarrow.feather as pf
         import pyarrow as pa
+        import pyarrow.feather as pf
     except ImportError:
         return None
     try:
+        # Schema first (cheap), then exactly one column.
         with pa.memory_map(str(db), "rb") as src:
-            rdr = pa.ipc.open_file(src)
-            return rdr.num_record_batches and sum(
-                rdr.get_batch(i).num_rows for i in range(rdr.num_record_batches))
-    except Exception:
-        try:
-            return pf.read_table(db, columns=[]).num_rows
-        except Exception:
+            names = pa.ipc.open_file(src).schema.names
+        if not names:
             return None
+        # The motif/track id column is a string column; any DATA column gives
+        # the same row count and is smaller. Prefer a non-id column when the
+        # schema exposes one.
+        pick = next((n for n in names if n not in ("motifs", "tracks")), names[0])
+        return pf.read_table(db, columns=[pick]).num_rows
+    except Exception:
+        return None
 
 
 def human(gb: float) -> str:
@@ -82,8 +114,12 @@ def main() -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--region-set-folder", type=Path, required=True)
     ap.add_argument("--db", type=Path, default=None,
-                    help="Rankings feather. Its row count is the motif count. "
-                         "Omit to use --n-motifs.")
+                    help="OPTIONAL rankings feather, to confirm the motif count "
+                         "from the file itself. NOT needed: the count is a fixed "
+                         "property of the motif collection (v10nr_clust = 32765) "
+                         "and --n-motifs covers it. Reading it costs one bounded "
+                         "column read, but the file may live on a filesystem "
+                         "where even that is slow -- skip it on a login node.")
     ap.add_argument("--n-motifs", type=int, default=32765,
                     help="Fallback motif count if --db is not given or not "
                          "readable (v10nr_clust: 32765).")
