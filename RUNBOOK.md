@@ -354,6 +354,43 @@ bash 03_pipeline/create_env.sh --repair-pins
 That force-reinstalls the pinned versions under constraint, reinstalls the git
 packages, repairs what `pip check` reports within the pins, and re-verifies.
 
+### The env builds, but our spec covers 35 of scenicplus's 222 pins
+
+After a successful build or repair, pip prints a long list of
+`scenicplus 1.0a2 requires X==a, but you have X==b`. That is not a failure and
+not noise — it is worth understanding before trusting the env.
+
+scenicplus v1.0a2's `requirements.txt` is a **full lock file: 222 pinned
+packages.** `03_pipeline/environment.yml` carries 34 pip pins plus 21 conda
+specs, so **187 of the upstream pins are uncovered** and pip resolves those
+freely to current versions. In the alphabetical tail visible in one run, 9 of 26
+were major-version jumps — `toolz` 0.12→1.1, `zope-interface` 6.2→8.6,
+`xmltodict` 0.13→1.0, `url-normalize` 1.4→3.0 — and that slice is roughly a
+seventh of the full list.
+
+Two things are true at once: the warnings are pip comparing *declared* against
+*installed* and are not evidence of breakage; and they are not evidence of
+safety either. Reasoning about 187 packages is not the way to settle it —
+exercise the code:
+
+```bash
+conda activate scenicplus
+bash 03_pipeline/smoke_test.sh      # read-only, minutes
+```
+
+It checks the CLI responds, imports one module per Snakemake rule so a failure
+*names the stage* that would break hours into a run, and runs the specific
+operations SCENIC+ performs on the paired object: building a `MuData`, calling
+`.to_df()` on a modality, the gradient-boosting regressor behind TF-to-gene, a
+`pyarrow` feather round-trip as cisTarget does on the rankings database, and the
+snakemake and ray entry points.
+
+If a stage fails on a package pip warned about, add it at scenicplus's pinned
+version to the pip section of `environment.yml` and re-run `--repair-pins`.
+Adding all 187 up front would be the *reproducible* choice, but it also
+re-introduces the resolver conflicts this file spent three rounds escaping, so
+it is worth doing only for pins that demonstrably matter.
+
 ### `--repair-pins` v1 deleted packages — read this before using an old checkout
 
 The first version of the repair ran `pip install --force-reinstall --no-deps -r
