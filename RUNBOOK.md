@@ -253,6 +253,33 @@ The pairing env is four libraries and solves in seconds; the full SCENIC+ env
 is ~900 packages with six source builds. Keep them separate so pairing can run
 before the big one exists.
 
+## Building the scenicplus env (the last long-running unknown)
+
+Job 10715336 failed with `EnvironmentNameNotFound: scenicplus` -- the env was
+never built. The config check passed, so this is the only thing missing.
+
+```bash
+bash 03_pipeline/preflight_env.sh          # seconds; validates the spec
+screen -S spenv                           # NOT a bare login shell
+mamba env create -f 03_pipeline/environment.yml
+conda activate scenicplus
+scenicplus --help                          # smoke test
+```
+
+Allow an hour or more: 234 conda packages (513 MB) plus 39 pip requirements,
+five of which build from source at pinned git refs.
+
+The preflight is worth the seconds. It checks the platform, solver, python pin,
+pandas placement, git pin *reachability* and disk before the solve -- so a
+deleted tag or an unreachable repo fails immediately rather than an hour in,
+after the conda side has already succeeded. Verified 2026-08-24 for linux-64:
+the conda specs solve to 234 packages with no conflicts, and all five git
+dependencies resolve at their pinned refs.
+
+`slurm/scenicplus.sbatch` now prints these instructions itself when activation
+fails, and distinguishes "env does not exist" from "env exists but will not
+activate".
+
 ### Fastest path: the h5py-only inspector
 
 `.h5ad` is documented HDF5, so the facts stage 1 needs can be read without

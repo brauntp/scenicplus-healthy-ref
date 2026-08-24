@@ -167,8 +167,28 @@ else
     if [[ -f "${CONDA_BASE}/etc/profile.d/conda.sh" ]]; then
         # shellcheck disable=SC1091
         source "${CONDA_BASE}/etc/profile.d/conda.sh"
-        conda activate "${CONDA_ENV}" || {
-            echo "ERROR: cannot activate env '${CONDA_ENV}'" >&2; exit 1; }
+        if ! conda activate "${CONDA_ENV}"; then
+            echo "ERROR: cannot activate env '${CONDA_ENV}'." >&2
+            echo >&2
+            if ! conda env list 2>/dev/null | grep -qE "^${CONDA_ENV}\s"; then
+                echo "       It does not exist. This is the ~900-package env" >&2
+                echo "       with source builds -- allow an hour or more, and" >&2
+                echo "       run it under screen/tmux, not a bare login shell:" >&2
+                echo >&2
+                echo "         bash 03_pipeline/preflight_env.sh   # validates the spec first" >&2
+                echo "         screen -S spenv" >&2
+                echo "         mamba env create -f 03_pipeline/environment.yml" >&2
+                echo >&2
+                echo "       preflight_env.sh checks the platform, solver," >&2
+                echo "       python pin, pandas placement, git pins and disk" >&2
+                echo "       BEFORE the solve, so a bad spec fails in seconds" >&2
+                echo "       rather than an hour in." >&2
+            else
+                echo "       It exists but will not activate -- check" >&2
+                echo "       ${CONDA_BASE} is the right conda root." >&2
+            fi
+            exit 1
+        fi
         echo "activated conda env: ${CONDA_ENV} (from ${CONDA_BASE})"
     else
         echo "ERROR: '${CONDA_ENV}' is not active and no conda.sh under" >&2

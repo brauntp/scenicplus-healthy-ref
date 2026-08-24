@@ -129,6 +129,30 @@ while IFS= read -r line; do
         bad "$pkg tracks moving ref '$ref' -- the env is not reproducible."
         note "     Install once, then: pip list --format=freeze | grep -i $pkg"
     fi
+    # Format is not existence. A pin can look perfect and still 404 -- a
+    # force-pushed branch, a deleted tag, a typo'd hash -- and pip only finds
+    # out after the conda solve, i.e. after the expensive part. git ls-remote
+    # answers in under a second.
+    url="$(sed -E 's/.*git\+([^@]+)@.*/\1/' <<<"$line")"
+    if command -v git >/dev/null 2>&1; then
+        if GIT_TERMINAL_PROMPT=0 git ls-remote --exit-code "$url" \
+               "$ref" >/dev/null 2>&1; then
+            ok "  ref reachable at $url"
+        elif GIT_TERMINAL_PROMPT=0 git ls-remote "$url" >/dev/null 2>&1; then
+            # ls-remote lists refs, not bare commit SHAs, so a commit pin that
+            # is not a branch or tag head lands here. Repo-reachable is as much
+            # as can be checked cheaply.
+            if [[ "$ref" =~ ^[0-9a-f]{40}$ ]]; then
+                ok "  repo reachable (ls-remote does not list commit SHAs)"
+            else
+                bad "  ref '$ref' NOT found at $url"
+                note "       pip will fail after the conda solve completes."
+            fi
+        else
+            bad "  cannot reach $url"
+            note "       Check network access from this host before building."
+        fi
+    fi
 done < <(grep -E '^\s*-\s*[A-Za-z0-9_.-]+\s*@\s*git\+' "$YML")
 
 # --------------------------------------------- 7. disk for the build

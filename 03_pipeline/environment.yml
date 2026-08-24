@@ -33,6 +33,18 @@
 
 name: scenicplus
 
+# VERIFIED 2026-08-24 for linux-64 (glibc 2.28): the 19 conda specs solve to
+# 234 packages, 513 MB download, no conflicts -- every pin resolves to a real
+# conda-forge/bioconda build. All five git dependencies were confirmed
+# reachable at their pinned refs (four commit SHAs, one tag v1.0a2).
+#
+# Run 03_pipeline/preflight_env.sh FIRST. It checks the platform, solver,
+# python pin, pandas placement, git pin reachability and disk in seconds --
+# a bad spec then fails immediately instead of an hour into the solve.
+#
+# Build under screen/tmux, not a bare login shell: the pip section compiles
+# from source and takes an hour or more.
+#
 channels:
   - conda-forge
   - bioconda
