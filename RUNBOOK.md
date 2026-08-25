@@ -354,6 +354,57 @@ bash 03_pipeline/create_env.sh --repair-pins
 That force-reinstalls the pinned versions under constraint, reinstalls the git
 packages, repairs what `pip check` reports within the pins, and re-verifies.
 
+## The positive control passed: 30/32 markers against 4.5 expected
+
+`summarize_eregulons.py` on the real tables:
+
+| compartment | recovered |
+|---|---|
+| HSC / progenitor | 7/7 |
+| erythroid | 5/5 |
+| megakaryocyte | 4/4 |
+| B lymphoid | 6/6 |
+| T / NK | 6/6 |
+| pDC | 3/3 |
+| myeloid / mono | 5/6 (CEBPE absent) |
+| granulocyte | **1/3** (CEBPE, GFI1 absent) |
+
+**The raw fraction is not the result — the enrichment is.** 229 of ~1,639 curated
+human TFs (Lambert et al. 2018) have an eRegulon here, so a random TF is
+recovered with p = 0.14 and chance predicts ~4.5 of the 32 distinct markers.
+Observed: 30. `P(>= 30 of 32) = 8.4e-24`. A network naming enough TFs hits markers
+by coincidence; this is not that. The tool now prints this baseline, and on a null
+fixture of 229 invented TF names it reports 0 observed against 4.5 expected and
+makes no enrichment claim.
+
+### The two absences are one lineage, with two independent explanations
+
+Only two distinct TFs are missing — CEBPE (counted in two compartments) and
+GFI1 — and both are granulocyte specification factors.
+
+1. **Late GMP was dropped before region sets** (3 independent metacells), and
+   that is precisely the granulocyte-monocyte progenitor compartment where CEBPE
+   and GFI1 act. Predicted consequence, arriving where predicted.
+2. **The reference has no mature granulocyte group at all.** Its 24 labels stop
+   at Early GMP / Late GMP plus EoBasoMast Precursor — expected for a bone-marrow
+   reference, since mature neutrophils are poorly captured in scRNA-seq (low RNA
+   content, high RNase).
+
+Both point at the input rather than the pipeline, and this output cannot say
+which dominates.
+
+### A prediction of mine that was wrong
+
+I expected erythroid markers to be thin, since pairing QC flagged both erythroid
+groups as the worst cross-modal alignments. **Erythroid scored 5/5** — GATA1,
+KLF1, TAL1, NFE2, GATA2 all recovered.
+
+That bounds how much the cross-modal gap matters: a pairing defect large enough
+to destroy erythroid regulons would have shown here, and it did not. It does
+**not** license calling the gap harmless. Marker recovery is coarser than link
+accuracy — the eRegulons can name the right TFs while carrying noisier target
+sets. Presence is necessary, not sufficient.
+
 ## First read of the eRegulon tables
 
 675 eRegulons over 229 TFs (direct 461 / 215; extended 214 / 104). Three things

@@ -67,6 +67,10 @@ RETENTION = {"Stromal": 0.60, "HSC_MPP": 0.96}
 # Flagged in docs/QC_RESULT.md as the worst cross-modal alignments in pairing.
 POOR_PAIRING = {"Early_Erythroid", "Late_Erythroid"}
 
+# Curated human TF repertoire size (Lambert et al., Cell 2018). Used only as the
+# denominator for the chance baseline on the lineage control.
+N_HUMAN_TF = 1639
+
 
 def load(path: Path, label: str) -> pd.DataFrame:
     if not path.exists():
@@ -168,6 +172,31 @@ def lineage_control(tfs: set[str]) -> None:
             print(f"      ABSENT : {', '.join(miss)}")
     print()
     print(f"    overall {tot_hit}/{tot_all} = {tot_hit/tot_all:.0%}")
+    print()
+    # A raw hit rate means nothing without a chance baseline: a network naming
+    # enough TFs will hit markers by coincidence. Compare against drawing the
+    # same NUMBER of TFs at random from the human repertoire.
+    distinct = {m for ms in LINEAGE_MARKERS.values() for m in ms}
+    n_hit = len(distinct & tfs)
+    k = len(distinct)
+    p_rand = min(1.0, len(tfs) / N_HUMAN_TF)
+    exp = p_rand * k
+    print(f"    CHANCE BASELINE. {len(tfs)} of ~{N_HUMAN_TF:,} human TFs "
+          f"(Lambert 2018)")
+    print(f"    have an eRegulon, so a random TF is recovered with "
+          f"p = {p_rand:.3f}.")
+    print(f"    distinct markers  : {k}")
+    print(f"    expected by chance: {exp:.1f} ({p_rand:.0%})")
+    print(f"    observed          : {n_hit} ({n_hit/k:.0%})")
+    if n_hit > exp:
+        try:
+            from math import comb
+            tail = sum(comb(k, i) * p_rand**i * (1 - p_rand)**(k - i)
+                       for i in range(n_hit, k + 1))
+            print(f"    P(>= {n_hit} of {k} by chance) = {tail:.2e}")
+        except (OverflowError, ValueError):
+            pass
+    print("    Enrichment over chance is the result; the raw fraction is not.")
     print("      An absent marker has three innocent explanations before")
     print("      'the pipeline failed': its cell type was dropped for too few")
     print("      independent metacells; it acts through a motif shared with a")
