@@ -63,6 +63,29 @@ except ImportError as exc:
 
 REGION_RE = re.compile(r"^(?P<chrom>[^:]+):(?P<start>\d+)-(?P<end>\d+)$")
 
+def write_table(df, out_dir, stem, index=False):
+    """Parquet if pyarrow/fastparquet is present, else CSV. Returns the path.
+
+    Do NOT make parquet a hard requirement: the pairing env is deliberately
+    minimal (numpy, scipy, pandas, h5py, anndata, mudata) and does not ship an
+    engine. 04_db/fetch_db_regions.py hit exactly this and already falls back --
+    the first version of this script did not, and a completed extraction died on
+    the write. Every consumer here reads either format.
+    """
+    from pathlib import Path
+    p = Path(out_dir) / f"{stem}.parquet"
+    try:
+        df.to_parquet(p, index=index)
+        return p
+    except Exception as e:                                    # ImportError, ValueError
+        p.unlink(missing_ok=True)
+        alt = Path(out_dir) / f"{stem}.csv.gz"
+        df.to_csv(alt, index=index, compression="gzip")
+        print(f"    parquet unavailable ({type(e).__name__}: no pyarrow/"
+              f"fastparquet) -- wrote {alt.name} instead")
+        return alt
+
+
 
 def parse_regions(regions: pd.Series) -> pd.DataFrame:
     """`chr1:1000-1500` -> columns. Fails loudly rather than silently dropping."""
@@ -149,8 +172,7 @@ def main() -> None:
     print("-- writing --------------------------------------------------------")
     coords = parse_regions(df["region"])
     out = pd.concat([df, coords], axis=1)
-    pq = args.out_dir / "peak_gene_links.parquet"
-    out.to_parquet(pq, index=False)
+    pq = write_table(out, args.out_dir, "peak_gene_links")
     print(f"  {pq.name:<30} {pq.stat().st_size/1024**2:>8.1f} MB  (all {n_link:,})")
 
     # -- filtered set --------------------------------------------------------
@@ -223,7 +245,7 @@ outside this project.
 
 ## Files
 
-- `peak_gene_links.parquet` — all links, coordinates parsed out of the region name
+- `{pq.name}` — all links, coordinates parsed out of the region name
 - `peak_gene_links_high.tsv` — `|rho| >= {args.min_abs_rho}`, top
   {args.top_n_per_gene} per gene by importance
 - `peak_gene_links.bedpe` — peak block to TSS block, for IGV / UCSC.

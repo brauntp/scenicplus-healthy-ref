@@ -44,6 +44,29 @@ except ImportError as exc:
              "       conda activate scplus-pairing")
 
 
+def write_table(df, out_dir, stem, index=False):
+    """Parquet if pyarrow/fastparquet is present, else CSV. Returns the path.
+
+    Do NOT make parquet a hard requirement: the pairing env is deliberately
+    minimal (numpy, scipy, pandas, h5py, anndata, mudata) and does not ship an
+    engine. 04_db/fetch_db_regions.py hit exactly this and already falls back --
+    the first version of this script did not, and a completed extraction died on
+    the write. Every consumer here reads either format.
+    """
+    from pathlib import Path
+    p = Path(out_dir) / f"{stem}.parquet"
+    try:
+        df.to_parquet(p, index=index)
+        return p
+    except Exception as e:                                    # ImportError, ValueError
+        p.unlink(missing_ok=True)
+        alt = Path(out_dir) / f"{stem}.csv.gz"
+        df.to_csv(alt, index=index, compression="gzip")
+        print(f"    parquet unavailable ({type(e).__name__}: no pyarrow/"
+              f"fastparquet) -- wrote {alt.name} instead")
+        return alt
+
+
 def decode(arr) -> np.ndarray:
     """HDF5 string datasets come back as bytes; anndata may also use categories."""
     out = np.asarray(arr)
@@ -147,8 +170,7 @@ def main() -> None:
     if not args.paired.exists():
         sys.exit(f"ERROR: paired object not found: {args.paired}")
     tf_df = extract_tf_expression(args.paired, tfs, args.block)
-    tf_out = args.out_dir / "tf_expression.parquet"
-    tf_df.to_parquet(tf_out)
+    tf_out = write_table(tf_df, args.out_dir, "tf_expression", index=True)
     print(f"  wrote {tf_out}  ({tf_out.stat().st_size / 1024**2:.1f} MB, "
           f"{tf_df.shape[0]:,} x {tf_df.shape[1] - 1})")
     print()

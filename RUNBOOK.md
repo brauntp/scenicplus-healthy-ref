@@ -366,6 +366,21 @@ conda activate scplus-pairing
 bash 05_report/make_plot_bundle.sh
 ```
 
+**`pyarrow` is not required.** The pairing env is deliberately minimal (numpy,
+scipy, pandas, h5py, anndata, mudata) and ships no parquet engine, so the
+extractors write `.csv.gz` instead and say so. An earlier version listed pyarrow
+as a hard requirement, which blocked the entire bundle over an output *format* —
+and then advised `conda activate scplus-pairing` to someone already inside that
+env. Both fixed: the guard checks only real requirements, reports which parquet
+engine it found (or none), and when a genuine dependency is missing it prints the
+`mamba install -n <env>` line for the env that is actually active.
+
+This is the second time in this project that a columnar-format dependency blocked
+a step in the minimal env; `04_db/fetch_db_regions.py` had already solved it by
+falling back rather than discarding completed work, and the new extractors now
+use the same `write_table()` pattern. The README written beside the links names
+whichever file was actually produced.
+
 Then, **from the laptop** (not from ARC):
 
 ```bash

@@ -41,16 +41,33 @@ if ! command -v python >/dev/null 2>&1; then
     exit 1
 fi
 python - <<'PY' || exit 1
-import sys
-need = ["h5py", "numpy", "pandas", "pyarrow"]
-missing = [m for m in need if __import__("importlib.util", fromlist=["x"])
-           .find_spec(m) is None]
+import os, sys
+from importlib.util import find_spec
+
+# HARD requirements only. pyarrow is deliberately NOT here: the pairing env is
+# minimal by design and the extractors fall back to .csv.gz when no parquet
+# engine exists. An earlier version listed it as required, which blocked the
+# whole bundle over an output FORMAT -- and then told the user to activate the
+# env they were already in.
+need = ["h5py", "numpy", "pandas"]
+missing = [m for m in need if find_spec(m) is None]
 if missing:
-    sys.exit(f"ERROR: missing {', '.join(missing)}\n"
-             f"       interpreter: {sys.executable}\n"
-             "       conda activate scplus-pairing\n"
-             "       (pyarrow is needed for the .parquet outputs)")
+    active = os.environ.get("CONDA_DEFAULT_ENV", "")
+    msg = [f"ERROR: missing {', '.join(missing)}",
+           f"       interpreter: {sys.executable}"]
+    if active:
+        # Do not tell someone to activate what is already active.
+        msg += [f"       active env : {active}  (already activated)",
+                f"       So this env genuinely lacks them. Install into it:",
+                f"           mamba install -n {active} " + " ".join(missing),
+                f"       or activate an env that has them."]
+    else:
+        msg += ["       no conda env active -- run: conda activate scplus-pairing"]
+    sys.exit("\n".join(msg))
+
+engine = next((m for m in ("pyarrow", "fastparquet") if find_spec(m)), None)
 print(f"  imports ok ({sys.executable})")
+print(f"  parquet engine: {engine or 'none -- tables will be written as .csv.gz'}")
 PY
 echo
 
