@@ -354,6 +354,74 @@ bash 03_pipeline/create_env.sh --repair-pins
 That force-reinstalls the pinned versions under constraint, reinstalls the git
 packages, repairs what `pip check` reports within the pins, and re-verifies.
 
+## Bringing data local for plotting
+
+**Do not transfer `scplusmdata.h5mu`.** It is 41 GB and ~99% of it is the input
+matrices carried through — the AUC layers it adds are 0.26 GB. Everything a local
+plotting session needs is a few hundred MB.
+
+```bash
+# on ARC
+conda activate scplus-pairing
+bash 05_report/make_plot_bundle.sh
+```
+
+That builds `05_report/plot_bundle/` and prints the `rsync` line to run on the
+laptop. Login-node safe: both extractors read in blocks/chunks and never
+materialise a whole matrix.
+
+### Why the bundle is small
+
+The metacell names encode the cell type (`B_mc0`, `HSC MPP_mc12` — see
+`02_pair/aggregate_atac_sparse.py:344`), so the AUC objects are **self-sufficient
+for per-cell-type plots**: no grouping table needed. The only thing they lack is
+TF expression, which lives inside the 41 GB file — and extracting just the ~229
+TF columns turns that into ~22 MB:
+
+| | size |
+|---|---|
+| full paired object | 40.4 GB |
+| its scRNA part alone | 3.30 GB |
+| just the TF columns | **22 MB** |
+
+### The peak-to-gene links are the reusable asset
+
+`region_to_gene_adj.tsv` is the **TF-agnostic** link table — every (peak, gene)
+pair in the TSS search space, scored by GBM importance and Spearman correlation.
+It is not restricted to the 229 TFs that got eRegulons and does not depend on any
+motif database, so it transfers to projects unrelated to this reference. The
+eRegulon tables are a TF-filtered, motif-gated *view* of it.
+
+`export_peak_gene_links.py` writes four files, and the README travels **with the
+data** so the caveats cannot be separated from it:
+
+- `peak_gene_links.parquet` — all links, coordinates parsed out of the region name
+- `peak_gene_links_high.tsv` — `|rho| >= 0.05`, top 20 per gene by importance
+- `peak_gene_links.bedpe` — peak block to TSS block for IGV/UCSC. **Its score
+  column is `|rho| * 1000` rounded**, because BEDPE demands an integer 0–1000 —
+  that discards the sign, so read the sign from the parquet.
+- `peak_gene_links.README.md` — provenance plus five caveats
+
+`rho`'s sign is the interesting field: positive means accessibility and expression
+covary (candidate enhancer), negative means they move oppositely (candidate
+silencer or repressor-bound element).
+
+The five caveats, because they must travel with any reuse: these are correlations
+across metacells rather than measured contacts (no 3C evidence); the metacells are
+GLUE-paired rather than true multiome, so every link inherits the pairing error;
+the ±150 kb search space bounds what can be found, so longer-range interactions
+are absent by construction rather than by evidence; ~50-cell metacells dilute
+links confined to a subpopulation; and the peaks are this reference's own
+consensus set, so reuse against another dataset requires re-mapping and will lose
+links to partial overlap.
+
+Validated on a 400,000-link fixture at the real schema: coordinate parsing checked
+against the independent `Chromosome`/`Start`/`End` columns, the filter row count
+against independently computed truth, and the BEDPE encoding against a recomputed
+score. Four failure paths exit 1 writing nothing — malformed region names (refused
+rather than silently dropped), wrong schema, missing file, and a missing TSS
+column (BEDPE skipped, everything else still written).
+
 ## The positive control passed: 30/32 markers against 4.5 expected
 
 `summarize_eregulons.py` on the real tables:
