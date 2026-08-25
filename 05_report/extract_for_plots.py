@@ -13,7 +13,7 @@ scRNA matrix inside a 41 GB file. Extracting just the TF columns turns a 41 GB
 transfer into ~22 MB:
 
     full paired object        40.4 GB
-    its scRNA part alone       3.30 GB
+    its scRNA part alone       3.22 GB
     just the ~229 TF columns  22.1 MB
 
 MEMORY: reads the paired object with h5py in row blocks and keeps only the TF

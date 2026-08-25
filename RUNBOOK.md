@@ -381,7 +381,7 @@ TF columns turns that into ~22 MB:
 | | size |
 |---|---|
 | full paired object | 40.4 GB |
-| its scRNA part alone | 3.30 GB |
+| its scRNA part alone | 3.22 GB |
 | just the TF columns | **22 MB** |
 
 ### The peak-to-gene links are the reusable asset
