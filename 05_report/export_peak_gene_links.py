@@ -159,10 +159,18 @@ def main() -> None:
           f"{df.groupby('target').size().median():.0f}")
     print(f"  links per peak : median "
           f"{df.groupby('region').size().median():.0f}")
-    pos = (df["rho"] > 0).sum()
+    # Count negatives DIRECTLY. `n_link - pos` buckets rho==0 and NaN into
+    # "negative": on the real table that mislabelled 3,976 NaN links, inflating
+    # the silencer count by ~1%.
+    pos = int((df["rho"] > 0).sum())
+    neg = int((df["rho"] < 0).sum())
+    nan = int(df["rho"].isna().sum())
+    zero = int((df["rho"] == 0).sum())
     print(f"  rho > 0 (candidate enhancer) : {pos:,} ({pos/n_link:.1%})")
-    print(f"  rho < 0 (candidate silencer) : {n_link-pos:,} "
-          f"({1-pos/n_link:.1%})")
+    print(f"  rho < 0 (candidate silencer) : {neg:,} ({neg/n_link:.1%})")
+    if nan or zero:
+        print(f"  rho undefined / exactly 0    : {nan:,} NaN + {zero:,} zero "
+              f"({(nan+zero)/n_link:.2%}) -- neither class")
     if "Distance" in df.columns:
         # Upstream ships this as a stringified 1-element list ("[-126154]"):
         # enhancer_to_gene.py leaves `result_df['Distance'].map(lambda x: x[0])`
@@ -263,7 +271,8 @@ outside this project.
 | genes | {n_gene:,} |
 | peaks | {n_peak:,} |
 | rho > 0 | {pos:,} ({pos/n_link:.1%}) |
-| rho < 0 | {n_link-pos:,} ({1-pos/n_link:.1%}) |
+| rho < 0 | {neg:,} ({neg/n_link:.1%}) |
+| rho NaN or exactly 0 | {nan + zero:,} ({(nan+zero)/n_link:.2%}) — neither class |
 
 `rho > 0` = accessibility and expression covary (candidate enhancer);
 `rho < 0` = they move oppositely (candidate silencer or repressor-bound element).
