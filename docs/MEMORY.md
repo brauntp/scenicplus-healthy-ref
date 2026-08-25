@@ -228,6 +228,24 @@ Two details that make this larger than it looks:
 Then `os.fork()` must succeed. At ~118 GB inside a 128 GB cgroup there is no
 headroom to admit the child, and fork returns ENOMEM.
 
+### MEASURED: serial AUCell succeeded (job 10721352)
+
+`--cpus-per-task 1`, both rules, no fork:
+
+| | value |
+|---|---|
+| `AUCell_extended` enrichment | 12.9 min -> `AUCell_extended.h5mu` 87 MB |
+| `AUCell_direct` enrichment | 14.1 min -> `AUCell_direct.h5mu` 183 MB |
+| total wall (read + enrich + write, both) | **27.8 min** |
+| read of the 40 GB paired object | ~18 s per rule |
+
+So the entire fork obstacle cost 28 minutes of single-threaded work. There is no
+parallel baseline to compare against — both parallel attempts died before a
+single worker started — so the speedup forgone is unknown, not small.
+
+Each rule is a separate process, so the paired object is read once per rule
+rather than shared. At ~18 s that is not worth restructuring.
+
 ### CORRECTION: `--cpus-per-task` IS the lever, `--mem` is not
 
 The 192 GB rerun failed with a **byte-identical** traceback. That retires the

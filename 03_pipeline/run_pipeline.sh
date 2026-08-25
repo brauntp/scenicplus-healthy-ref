@@ -624,12 +624,17 @@ cat <<PLAN
   region_to_gene method  : ${R2G_METHOD}
   r2g thresholds         : quantiles [${QUANTILES}], top-N per gene [${TOPN_GENE}]
 
-  rules that will run    : motif_enrichment_cistarget, motif_enrichment_dem,
-                           download_genome_annotations, prepare_menr,
-                           get_search_space, tf_to_gene, region_to_gene,
-                           eGRN_direct, eGRN_extended, AUCell_direct,
-                           AUCell_extended, scplus_mudata
+  rules in this pipeline : 12 (the count the Snakefile defines on this branch;
+                           what will ACTUALLY run is printed below, from
+                           snakemake's own plan)
 PLAN
+
+# The banner used to assert a hardcoded list of "rules that will run". It was a
+# literal, so it stayed the same whether 12 rules were pending or 2 -- on the
+# AUCell-only subset build it named all twelve while snakemake ran two. Ask
+# snakemake instead: a dry run costs a second and reports the truth, including
+# the effect of --target and of outputs already on disk. That block lives further
+# down, just before the real invocation, because it needs SNAKE_ARGS.
 
 if [[ "$VALIDATE_ONLY" -eq 1 ]]; then
     echo ""
@@ -716,6 +721,32 @@ fi
 printf '      snakemake'; printf ' %q' "${SNAKE_ARGS[@]}"; printf '\n\n'
 
 set +e
+if [[ "$DRY_RUN" -eq 0 ]]; then
+    echo ""
+    echo "  what snakemake plans to run (from --dry-run):"
+    # NOT --quiet: that suppresses the "Job stats:" table entirely (verified --
+    # it prints only a header block), so the parser would find nothing and the
+    # fallback message would fire on every run. Parse the real table, and take
+    # the FIRST block: snakemake repeats it per DAG-build pass.
+    _plan="$(snakemake "${SNAKE_ARGS[@]}" "${TARGETS[@]+"${TARGETS[@]}"}" \
+                --dry-run 2>/dev/null \
+             | awk '/^Job stats:/{n++} n==1' )" || _plan=""
+    if grep -qE '^total[[:space:]]+[0-9]+' <<<"$_plan"; then
+        # Stop at the blank line that ends the table: past it snakemake prints
+        # per-job detail whose `jobid:  N` lines also match "two fields, second
+        # numeric" and leaked into the listing.
+        echo "$_plan" | awk '/^Job stats:/{t=1; next} t && NF==0{exit} \
+                             t && NF==2 && $2 ~ /^[0-9]+$/ \
+                               && $1 != "total" && $1 != "job" \
+                               {printf "    %-32s %s\n", $1, $2}'
+        echo "$_plan" | awk '$1=="total" {print "    total: " $2 " job(s)"}'
+    else
+        echo "    (dry run produced no plan -- snakemake may consider everything"
+        echo "     up to date, or the DAG failed to build; the real run below"
+        echo "     will say which)"
+    fi
+fi
+
 if (( ${#TARGETS[@]} )); then
     echo "targets: ${TARGETS[*]}"
     echo "  (a subset of the DAG -- the final-target check below is skipped)"

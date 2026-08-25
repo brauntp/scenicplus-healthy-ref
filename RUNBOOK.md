@@ -354,6 +354,32 @@ bash 03_pipeline/create_env.sh --repair-pins
 That force-reinstalls the pinned versions under constraint, reinstalls the git
 packages, repairs what `pip check` reports within the pins, and re-verifies.
 
+### Serial AUCell worked: 28 min, both outputs written
+
+Job 10721352 at `--cpus-per-task 1`: `AUCell_extended.h5mu` (87 MB) in 12.9 min,
+`AUCell_direct.h5mu` (183 MB) in 14.1 min, 27.8 min total. No fork, no ENOMEM.
+
+**One rule left.** `scplus_mudata` assembles the final object:
+
+```bash
+git pull
+sbatch slurm/scenicplus.sbatch
+```
+
+It reads the paired object plus both AUC objects (~41 GB), single-threaded, no
+fork — the `--target` detour is not needed and full width is fine.
+
+Two banner bugs this run exposed, both fixed:
+
+- **"rules that will run" was a hardcoded list of all twelve.** On the
+  AUCell-only subset build it named all twelve while snakemake ran two. It now
+  runs `--dry-run` and prints snakemake's own job table, so it reflects
+  `--target` and what is already on disk. (`--quiet` cannot be used for this: it
+  suppresses the job table entirely.)
+- **The closing note said "the 54G here"** long after `--mem` moved to 128G and
+  then 192G, advising you to check a figure the job never requested. It now reads
+  the directive from `$SLURM_MEM_PER_NODE`.
+
 ### AUCell failed at fork — run it at `--cpus-per-task 1`
 
 Both eGRN rules completed (`eRegulon_direct.tsv`, `eRegulons_extended.tsv` are

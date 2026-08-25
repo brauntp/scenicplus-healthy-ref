@@ -416,9 +416,14 @@ if [[ "$RC" -eq 0 ]]; then
     echo "    GMP) and docs/QC_RESULT.md flags both erythroid groups as the"
     echo "    worst-aligned in the pairing -- thin erythroid results are the"
     echo "    cross-modal gap surfacing downstream, not a pipeline failure."
-    echo "  - sacct MaxRSS against --mem: the 54G here is an extrapolation from"
-    echo "    a column subset (1.07x overhead factor), not a measurement at"
-    echo "    scale. Record the real figure in docs/MEMORY.md."
+    # Read the directive rather than naming a number: this line said "the 54G
+    # here" long after --mem had moved to 128G and then 192G, so it advised
+    # checking a figure the job never requested.
+    echo "  - sacct -j \$SLURM_JOB_ID --format=JobID,MaxRSS,Elapsed,State"
+    echo "    against the --mem this job actually requested"
+    echo "    (\$((\${SLURM_MEM_PER_NODE:-0} / 1024))G). Every figure in"
+    echo "    docs/MEMORY.md for the rules that ran here is derived from source"
+    echo "    reading, not measured at this scale -- record the real MaxRSS."
 else
     echo "pipeline FAILED (exit $RC)"
     echo
