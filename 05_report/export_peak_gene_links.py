@@ -164,7 +164,14 @@ def main() -> None:
     print(f"  rho < 0 (candidate silencer) : {n_link-pos:,} "
           f"({1-pos/n_link:.1%})")
     if "Distance" in df.columns:
-        d = pd.to_numeric(df["Distance"], errors="coerce").abs()
+        # Upstream ships this as a stringified 1-element list ("[-126154]"):
+        # enhancer_to_gene.py leaves `result_df['Distance'].map(lambda x: x[0])`
+        # COMMENTED OUT. A bare pd.to_numeric returns all-NaN and the summary
+        # line silently printed "nan" -- observed on the real table.
+        df["Distance"] = (df["Distance"].astype(str)
+                            .str.strip("[]").replace("", np.nan)
+                            .astype("Float64").astype("Int64"))
+        d = df["Distance"].abs()
         print(f"  |Distance| to TSS : median {d.median():,.0f} bp, "
               f"max {d.max():,.0f} bp")
     print()
@@ -190,12 +197,25 @@ def main() -> None:
           f"({len(hi):,} links, {hi['target'].nunique():,} genes)")
 
     # -- BEDPE ---------------------------------------------------------------
+    bedpe_note = "- `peak_gene_links.bedpe` — not produced (`--no-bedpe`)."
     if not args.no_bedpe:
         tss_col = ("Transcription_Start_Site"
                    if "Transcription_Start_Site" in hi.columns else None)
         if tss_col is None:
-            print("  BEDPE skipped: no Transcription_Start_Site column "
-                  "(add_distance was off upstream)")
+            print("  BEDPE skipped: the adjacency has no "
+                  "Transcription_Start_Site column.")
+            print("    `Distance` cannot substitute: it is strand-RELATIVE")
+            print("    (location x min_distance, where location is multiplied by")
+            print("    the gene's strand), so its sign gives upstream/downstream")
+            print("    in gene orientation, not genomic direction. Without")
+            print("    `Strand` the TSS is genuinely unrecoverable -- join")
+            print("    03_pipeline/genome_annotation.tsv on the gene to get it.")
+            bedpe_note = (
+                "- `peak_gene_links.bedpe` — **NOT produced.** The adjacency\n"
+                "  lacked `Transcription_Start_Site`, and `Distance` cannot\n"
+                "  substitute: its sign is strand-relative, so TSS position is\n"
+                "  unrecoverable without `Strand`. Join\n"
+                "  `03_pipeline/genome_annotation.tsv` on the gene to build one.")
         else:
             tss = pd.to_numeric(hi[tss_col], errors="coerce")
             keep = tss.notna()
@@ -217,6 +237,11 @@ def main() -> None:
             bp.to_csv(bpe, sep="\t", index=False, header=False)
             print(f"  {bpe.name:<30} {bpe.stat().st_size/1024**2:>8.1f} MB  "
                   f"({len(bp):,} pairs)")
+            bedpe_note = (
+                "- `peak_gene_links.bedpe` — peak block to TSS block, for IGV /\n"
+                "  UCSC. **Its score column is `|rho| * 1000` rounded**, because\n"
+                "  BEDPE requires an integer 0–1000 — that discards the sign, so\n"
+                "  read the sign from the table above.")
 
     # -- provenance, written beside the data ---------------------------------
     readme = args.out_dir / "peak_gene_links.README.md"
@@ -248,10 +273,7 @@ outside this project.
 - `{pq.name}` — all links, coordinates parsed out of the region name
 - `peak_gene_links_high.tsv` — `|rho| >= {args.min_abs_rho}`, top
   {args.top_n_per_gene} per gene by importance
-- `peak_gene_links.bedpe` — peak block to TSS block, for IGV / UCSC.
-  **The BEDPE score column is `|rho| * 1000` rounded**, because BEDPE requires an
-  integer 0–1000. It is not importance, and it discards the sign — read the sign
-  from the parquet/TSV.
+{bedpe_note}
 
 ## Caveats that travel with the data
 
