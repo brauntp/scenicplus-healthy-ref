@@ -106,6 +106,101 @@ def per_eregulon(df: pd.DataFrame) -> pd.DataFrame:
     return out.sort_values("n_genes", ascending=False)
 
 
+# TFs that share a motif with a family member, or that reach DNA only through a
+# partner. cisTarget scores MOTIFS, so it cannot separate these: each expressed
+# family member gets its own eRegulon from the same motif hits. Listing them is
+# not a criticism of the pipeline -- it is the interpretive limit of motif
+# enrichment, and reporting counts without it invites double-counting.
+SHARED_MOTIF = {
+    "RUNX": ["RUNX1", "RUNX2", "RUNX3"],
+    "ELF (ETS)": ["ELF1", "ELF2", "ELF4"],
+    "GABP (ETS)": ["GABPA", "GABPB1", "GABPB2"],
+    "ETS broad": ["ETS1", "ETS2", "ELK1", "ELK3", "ELK4", "ERF", "ETV3"],
+    "E-protein": ["TCF3", "TCF4", "TCF12"],
+    "IRF": ["IRF1", "IRF2", "IRF8", "IRF9"],
+}
+
+# Present in a network only via a partner -- they make no direct DNA contact, so
+# a motif-based method cannot have evidenced them independently.
+NO_DIRECT_DNA_CONTACT = {
+    "CBFB": "RUNX1/2/3 obligate partner",
+    "GABPB1": "GABPA obligate partner",
+    "GABPB2": "GABPA obligate partner",
+    "EP300": "histone acetyltransferase co-activator",
+    "CREBBP": "histone acetyltransferase co-activator",
+    "TBL1XR1": "NCoR/SMRT corepressor subunit",
+    "BPTF": "NURF remodelling subunit",
+    "SMARCA4": "SWI/SNF ATPase",
+}
+
+
+# Canonical haematopoietic regulators, by compartment. A POSITIVE CONTROL: if
+# these are absent the network is suspect regardless of how many eRegulons it
+# contains. Chosen from established lineage biology, not from this run's output,
+# so the check can fail.
+LINEAGE_MARKERS = {
+    "HSC / progenitor": ["RUNX1", "GATA2", "TAL1", "MYB", "ETV6", "MECOM", "HLF"],
+    "erythroid":        ["GATA1", "KLF1", "TAL1", "NFE2", "GATA2"],
+    "megakaryocyte":    ["GATA1", "FLI1", "RUNX1", "MEIS1"],
+    "myeloid / mono":   ["SPI1", "CEBPA", "CEBPB", "CEBPE", "IRF8", "KLF4"],
+    "granulocyte":      ["CEBPE", "GFI1", "SPI1"],
+    "B lymphoid":       ["PAX5", "EBF1", "TCF3", "POU2AF1", "IRF4", "SPIB"],
+    "T / NK":           ["TCF7", "GATA3", "LEF1", "RUNX3", "TBX21", "EOMES"],
+    "pDC":              ["TCF4", "IRF8", "SPIB"],
+}
+
+
+def lineage_control(tfs: set[str]) -> None:
+    """Did the network recover the TFs a haematopoietic reference must contain?"""
+    print("-- positive control: canonical lineage regulators ---------------------")
+    print("   These are chosen from lineage biology, not from this output, so")
+    print("   the check can fail. Absence is the informative direction.")
+    print()
+    tot_hit = tot_all = 0
+    for comp, members in LINEAGE_MARKERS.items():
+        hit = [m for m in members if m in tfs]
+        miss = [m for m in members if m not in tfs]
+        tot_hit += len(hit); tot_all += len(members)
+        print(f"    {comp:<18} {len(hit)}/{len(members)}")
+        if hit:
+            print(f"      found  : {', '.join(hit)}")
+        if miss:
+            print(f"      ABSENT : {', '.join(miss)}")
+    print()
+    print(f"    overall {tot_hit}/{tot_all} = {tot_hit/tot_all:.0%}")
+    print("      An absent marker has three innocent explanations before")
+    print("      'the pipeline failed': its cell type was dropped for too few")
+    print("      independent metacells; it acts through a motif shared with a")
+    print("      recovered paralogue; or it is broadly active and so invisible")
+    print("      to one-vs-rest DAR region sets.")
+    print()
+
+
+def motif_sharing_report(tfs: set[str]) -> None:
+    """Which recovered TFs cannot be told apart, and which bind only via partners."""
+    print("-- motif sharing: eRegulons that are not independent -----------------")
+    any_hit = False
+    for fam, members in SHARED_MOTIF.items():
+        present = [m for m in members if m in tfs]
+        if len(present) > 1:
+            any_hit = True
+            print(f"    {fam:<12} {', '.join(present)}")
+    if not any_hit:
+        print("    no families with more than one member recovered")
+    print("      Members of a family share a motif, so their eRegulons draw on")
+    print("      the SAME motif hits. Do not treat them as independent evidence,")
+    print("      and do not sum their target counts.")
+    print()
+    cof = {t: why for t, why in NO_DIRECT_DNA_CONTACT.items() if t in tfs}
+    if cof:
+        print("    Recovered but making no direct DNA contact:")
+        for t, why in sorted(cof.items()):
+            print(f"      {t:<9} {why}")
+        print("      These appear because a motif was annotated to them or to a")
+        print("      partner. Their presence is not motif evidence for them.")
+    print()
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -143,7 +238,22 @@ def main() -> None:
     sig = (df.groupby(["set", "sign"])["eRegulon_name"].nunique()
              .unstack(fill_value=0))
     print(sig.to_string())
-    print("  +/+ activator through accessible regions; -/+ repressor.")
+    print("  The two signs are INDEPENDENT: first is TF-to-gene correlation,")
+    print("  second is region-to-gene. All four occur, and the previous version")
+    print("  of this legend explained only two of them:")
+    print("    +/+  TF rises with targets, regions open with them  -> activator")
+    print("    -/-  TF falls with targets, regions close with them -> coherent")
+    print("         repressor")
+    print("    +/-  TF rises with targets but the regions CLOSE. Mixed. Can be a")
+    print("         real repressive-looping mechanism, or the r2g correlation")
+    print("         being driven by a different factor in the same locus.")
+    print("    -/+  TF falls with targets while regions open. Same caution.")
+    _mixed = sig.get("+/-", pd.Series(dtype=int)).sum() + \
+             sig.get("-/+", pd.Series(dtype=int)).sum()
+    _tot = int(sig.to_numpy().sum())
+    if _tot:
+        print(f"  MIXED-SIGN here: {_mixed}/{_tot} = {_mixed/_tot:.0%}. Treat those")
+        print("  as hypotheses rather than called activators or repressors.")
     print()
 
     # -- per-eRegulon table ---------------------------------------------------
@@ -152,12 +262,19 @@ def main() -> None:
     csv = args.out_prefix.with_suffix(".csv")
     tab.to_csv(csv)
     print(f"-- top {args.top} eRegulons by target-gene count -------------------")
+    print("   CAUTION: ranking by target-gene count structurally favours broadly")
+    print("   active and promoter-proximal factors over lineage-restricted ones.")
+    print("   A big eRegulon is not a more important one. See the note below the")
+    print("   table.")
     cols = [c for c in ("TF", "sign", "n_regions", "n_genes", "n_links",
                         "median_importance_x_abs_rho_R2G") if c in tab.columns]
     print(tab[cols].head(args.top).to_string())
     print()
     print(f"  full table ({len(tab)} eRegulons): {csv}")
     print()
+
+    lineage_control(set(df["TF"]))
+    motif_sharing_report(set(df["TF"]))
 
     # -- caveats, cross-referenced against what was actually found -----------
     print("-- caveats, checked against the results -----------------------------")

@@ -354,6 +354,69 @@ bash 03_pipeline/create_env.sh --repair-pins
 That force-reinstalls the pinned versions under constraint, reinstalls the git
 packages, repairs what `pip check` reports within the pins, and re-verifies.
 
+## First read of the eRegulon tables
+
+675 eRegulons over 229 TFs (direct 461 / 215; extended 214 / 104). Three things
+to know before reading biology into that.
+
+### The lineage TFs are there — that is the positive control
+
+The top-25 rows carry RUNX1, CBFB, SPI1 (PU.1), IRF8, ETV6, TCF12 and RUNX2:
+core definitive-haematopoiesis and myeloid/lymphoid regulators. Recovering them
+from a haematopoietic reference is what a working eGRN should do, and it is the
+strongest evidence the pipeline produced signal rather than noise.
+
+`summarize_eregulons.py` now runs that as an explicit control across eight
+compartments, with markers chosen from lineage biology rather than from this
+output — so it can fail. Absence is the informative direction, and it has three
+innocent explanations before "the pipeline failed": the cell type was dropped for
+too few independent metacells, the TF acts through a motif shared with a
+recovered paralogue, or it is broadly active and therefore invisible to
+one-vs-rest DAR region sets.
+
+### Ranking by target-gene count favours the wrong TFs
+
+Roughly half the top 25 are not lineage regulators: EP300 and CREBBP-class
+co-activators, YY1, BPTF (NURF), TBL1XR1 (NCoR/SMRT), and the broadly-expressed
+ETS factors ELF1/ELF2/ELK4/ETS2/GABPA. Broad and promoter-proximal factors have
+more accessible targets, so they rise in any count-based ranking. **A big
+eRegulon is not a more important one**, and the table now says so above itself.
+
+### Paralogues are not independent evidence
+
+cisTarget scores *motifs*, so family members sharing one motif each get their own
+eRegulon from the same hits:
+
+| family | recovered together |
+|---|---|
+| RUNX | RUNX1, RUNX2 |
+| ELF (ETS) | ELF1, ELF2 |
+| GABP (ETS) | GABPA, GABPB1 |
+
+And several recovered factors make **no direct DNA contact** at all — CBFB
+(RUNX1's obligate partner), GABPB1 (GABPA's), EP300, TBL1XR1, BPTF. They appear
+because a motif is annotated to them or to a partner; that is not motif evidence
+for them. So RUNX2's 487 genes and CBFB's 507 are not independent of RUNX1's 913.
+Do not sum within a family.
+
+### The sign field has four values, not two
+
+`TF_[direct|extended]_[+|-]/[+|-]` — the first sign is TF-to-gene correlation,
+the second region-to-gene, and they are independent:
+
+| sign | count | reading |
+|---|---|---|
+| `+/+` | 288 | activator: TF and accessibility both rise with targets |
+| `+/-` | 225 | mixed: TF rises but regions close |
+| `-/+` | 87 | mixed: TF falls while regions open |
+| `-/-` | 75 | coherent repressor |
+
+**46% are mixed-sign.** Those are hypotheses, not called activators or
+repressors — a mixed sign can be a real repressive-looping mechanism or the
+region-to-gene correlation being driven by a different factor in the same locus.
+My first version of this legend explained only `+/+` and `-/+`, which left the
+largest mixed class unmentioned.
+
 ## The pipeline completed — what to read
 
 `scplusmdata.h5mu` written, 41 GB (job 10721524). All twelve rules done.
