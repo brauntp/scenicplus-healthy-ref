@@ -354,6 +354,35 @@ bash 03_pipeline/create_env.sh --repair-pins
 That force-reinstalls the pinned versions under constraint, reinstalls the git
 packages, repairs what `pip check` reports within the pins, and re-verifies.
 
+### AUCell failed at fork — raise `--mem`, do not touch `--cpus-per-task`
+
+Both eGRN rules completed (`eRegulon_direct.tsv`, `eRegulons_extended.tsv` are
+banked). `AUCell_direct` and `AUCell_extended` then failed at 128 GB with
+
+```
+OSError: [Errno 12] Cannot allocate memory     at os.fork()
+```
+
+**Not the OOM killer.** A full traceback, no `oom_kill`, ordinary exit 1: the
+kernel refused to admit another address space because the parent was already
+~118 GB inside a 128 GB cgroup. `docs/MEMORY.md` has the breakdown — the paired
+object, *both* rank matrices held simultaneously, and `aucell4r`'s
+`RawArray(uint32)` for the region matrix.
+
+**`--cpus-per-task` is the wrong lever here**, and this is the trap: it was the
+*right* lever for `motif_enrichment_cistarget`. cisTarget loads its database once
+per joblib worker, so concurrency multiplies the peak. `aucell4r` allocates its
+`RawArray` **once** and only then forks, so the peak is flat in `n_cpu` above 1.
+
+Just resubmit — `--mem` is now 192 GB:
+
+```bash
+git pull
+sbatch slurm/scenicplus.sbatch
+```
+
+Remaining: `AUCell_direct`, `AUCell_extended`, `scplus_mudata`.
+
 ### cisTarget succeeded at `--cpus-per-task 2` (job 10719633)
 
 25.5 min, 21 region sets in 11 waves, `ctx_results.hdf5` 202 MB, at

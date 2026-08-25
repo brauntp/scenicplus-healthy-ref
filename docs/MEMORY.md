@@ -189,6 +189,71 @@ that is large for a 100k-cell object, and a shared filesystem makes topic
 modelling I/O-bound.
 
 
+## AUCell: `ENOMEM at os.fork()` is not the OOM killer
+
+`AUCell_direct` and `AUCell_extended` both failed at 128 GB with
+
+```
+  File ".../multiprocessing/popen_fork.py", line 66, in _launch
+    self.pid = os.fork()
+OSError: [Errno 12] Cannot allocate memory
+```
+
+**This is a different failure from the cisTarget OOM.** There is a full Python
+traceback and no `oom_kill` event: the kernel *refused* to admit another address
+space, rather than killing a process that had one. The shell exit code is an
+ordinary 1, so anything keying on 137 reports it as a plain error.
+
+### Where ~118 GB goes, in order
+
+`calculate_auc` → `score_eRegulons` → `rank_data` → `aucell4r`:
+
+| step | scATAC | scRNA |
+|---|---|---|
+| `mudata.read(ACC_GEX.h5mu)` | 37.2 GB | 3.2 GB |
+| `.to_df()` on both | shares memory with a dense `.X` | — |
+| `rank_data()` — **both computed before either enrichment runs** | 37.2 GB | 3.2 GB |
+| `aucell4r` `RawArray(c_uint32)`, region step | 37.2 GB | — |
+| **peak** | | **~118 GB** |
+
+Two details that make this larger than it looks:
+
+- `rank_data` does `ranking = np.zeros_like(mtx)` where `mtx = df.to_numpy()`.
+  The `.astype('uint32')` applies to the row *values*, which are assigned back
+  into a **float32** array — so the ranking is float32, the same width as the
+  source, not the uint32 the values are cast to.
+- `score_eRegulons` computes `gex_ranking` **and** `acc_ranking` up front, so
+  the 37.2 GB region ranking stays resident throughout the gene AUC.
+
+Then `os.fork()` must succeed. At ~118 GB inside a 128 GB cgroup there is no
+headroom to admit the child, and fork returns ENOMEM.
+
+### `--cpus-per-task` does NOT help here
+
+This is the **opposite** of `motif_enrichment_cistarget`, and conflating them
+wastes a run:
+
+| rule | database/array | scales with `n_cpu`? |
+|---|---|---|
+| `motif_enrichment_cistarget` | each joblib worker loads its own | **yes** — throttle it |
+| `AUCell_*` | `RawArray` allocated **once**, then forks | **no** — peak is flat above `n_cpu=1` |
+
+| `n_cpu` | RawArray | peak |
+|---|---|---|
+| 1 | none (serial branch) | ~81 GB |
+| 2–16 | 37.2 GB | ~118 GB |
+
+`n_cpu=1` does take a serial branch that skips the `RawArray` entirely, but it
+still needs ~81 GB and makes AUCell single-threaded over every eRegulon. **Raise
+`--mem` instead** — now 192 GB, giving ~74 GB of headroom over the peak.
+
+### What remains after this
+
+`eGRN_direct` and `eGRN_extended` both completed before the failure, so
+`eRegulon_direct.tsv` and `eRegulons_extended.tsv` are banked. Remaining:
+`AUCell_direct`, `AUCell_extended`, `scplus_mudata`. The last reads the paired
+object plus both AUC objects (~41 GB) and is not the binding rule.
+
 ## MEASURED: cisTarget at `--cpus-per-task 2` (job 10719633)
 
 The subset run succeeded. Numbers from its log, replacing the projections:

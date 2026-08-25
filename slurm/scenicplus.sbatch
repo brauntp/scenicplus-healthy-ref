@@ -122,7 +122,24 @@
 # choose_dar_threshold.py --top-n 5000 --write, which fits all 21 sets in 128G
 # with every worker running. See docs/MEMORY.md.
 # See docs/MEMORY.md and 03_pipeline/probe_region_to_gene_memory.py.
-#SBATCH --mem=128G
+# 192G, raised from 128G after AUCell_direct and AUCell_extended both failed
+# with OSError: [Errno 12] Cannot allocate memory at os.fork().
+#
+# That is NOT an OOM kill -- there is no oom_kill event and the process produced
+# a full traceback. The allocation was REFUSED because the parent was already
+# too large for the cgroup to admit another address space.
+#
+# Where the ~118 GB goes, in order (see docs/MEMORY.md):
+#   mudata.read(ACC_GEX.h5mu)                          40.4 GB
+#   rank_data() on BOTH modalities, both held at once  40.4 GB
+#     (`ranking = np.zeros_like(mtx)` inherits float32 from the source, so
+#      this is NOT the uint32 the ranking values are cast to)
+#   aucell4r RawArray(c_uint32) for the region matrix  37.2 GB
+#
+# --cpus-per-task does NOT help: the RawArray is allocated once, not per worker,
+# so the peak is flat in n_cpu above 1. This is the opposite of
+# motif_enrichment_cistarget, where concurrency WAS the multiplier.
+#SBATCH --mem=192G
 
 # --- walltime ----------------------------------------------------------------
 # region_to_gene and the two eGRN/GSEA rules dominate. With a few hundred

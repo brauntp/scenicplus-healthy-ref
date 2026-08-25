@@ -735,6 +735,17 @@ if [[ $rc -ne 0 ]]; then
     echo "      with --cpus-per-task. Size it first:" >&2
     echo "        python 03_pipeline/size_cistarget_memory.py \\" >&2
     echo "            --region-set-folder 01_atac/region_sets --db <rankings.feather>" >&2
+    echo "    - 'OSError: [Errno 12] Cannot allocate memory' AT os.fork()" >&2
+    echo "      -> NOT an OOM kill. There is a full traceback and no oom_kill event;" >&2
+    echo "      the fork was REFUSED because the parent was already too large for" >&2
+    echo "      the cgroup to admit another address space. Seen in AUCell_direct /" >&2
+    echo "      AUCell_extended, where aucell4r allocates a RawArray of" >&2
+    echo "      n_cells x n_regions BEFORE forking, on top of the paired object and" >&2
+    echo "      both rank matrices (~118 GB at this reference's size)." >&2
+    echo "      RAISE --mem. Lowering --cpus-per-task does NOT help: the RawArray is" >&2
+    echo "      allocated once, not per worker, so the peak is flat in n_cpu above 1." >&2
+    echo "      (n_cpu=1 does take a serial branch that skips the RawArray, but it" >&2
+    echo "      still needs ~81 GB and makes AUCell single-threaded.)" >&2
     echo "    - 'No space left on device'     -> params_general.temp_dir filled up." >&2
     echo "    - logs are under ${WORKDIR}/.snakemake/log/" >&2
     echo "" >&2

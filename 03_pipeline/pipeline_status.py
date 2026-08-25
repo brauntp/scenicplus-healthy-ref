@@ -80,9 +80,20 @@ def last_failure(workdir: Path) -> dict | None:
     log records `Error in rule <name>:` plus the shell exit code, which is the
     only place the two are stated together.
 
-    Exit code 137 = SIGKILL = the OOM killer in practice. Distinguishing that
-    from an ordinary non-zero exit matters, because the remedy is different:
-    more memory versus a real bug.
+    Two memory failures look different and have different remedies, so they are
+    reported separately:
+
+      exit 137 (SIGKILL)  the OOM killer. No traceback, process killed outright.
+
+      ENOMEM at os.fork() a full traceback ending in
+                          `OSError: [Errno 12] Cannot allocate memory`, and NO
+                          oom_kill event. The allocation was REFUSED, not the
+                          process killed -- the parent was already too large for
+                          the cgroup to admit another address space. Seen in the
+                          AUCell rules, where aucell4r allocates a RawArray of
+                          n_cells x n_features and only then forks its workers.
+                          The exit code is an ordinary 1, so keying on 137 alone
+                          reports this as a plain error and hides the cause.
     """
     logs = sorted((workdir / ".snakemake" / "log").glob("*.snakemake.log"),
                   key=lambda p: p.stat().st_mtime, reverse=True)
@@ -103,7 +114,8 @@ def last_failure(workdir: Path) -> dict | None:
         if line.startswith("Error in rule "):
             fails.append({"rule": line[len("Error in rule "):].rstrip(":").strip(),
                           "exit": pending_code,
-                          "oom": pending_code in (137, 9)})
+                          "oom": pending_code in (137, 9),
+                          "enomem": False})
             pending_code = None
     # Snakemake repeats each failure in an end-of-run summary, where no exit
     # code precedes it -- so the same rule appears twice, once with a code and
@@ -115,6 +127,27 @@ def last_failure(workdir: Path) -> dict | None:
         if prev is None or (prev["exit"] is None and f["exit"] is not None):
             dedup[f["rule"]] = f
     fails = list(dedup.values())
+
+    # ENOMEM-at-fork does not show in the exit code (it is an ordinary 1), and
+    # snakemake's log carries the rule's stderr, so look for the signature in
+    # the log body. Attribute it to the rule whose error block it precedes.
+    # Window the search between the PREVIOUS error block and this one. Taking
+    # everything before a rule's block misattributes: a rule failing after an
+    # ENOMEM rule would inherit its signature (verified -- tf_to_gene picked up
+    # AUCell_direct's ENOMEM tag before this fix).
+    err_positions = [(m.start(), m.group(1)) for m in
+                     re.finditer(r"^Error in rule (\w+):", txt, re.M)]
+    prev_end = 0
+    seen: set[str] = set()
+    for pos, rule in err_positions:
+        if rule not in seen:                       # first occurrence only
+            window = txt[prev_end:pos]
+            if "Cannot allocate memory" in window or "[Errno 12]" in window:
+                for f in fails:
+                    if f["rule"] == rule:
+                        f["enomem"] = True
+            seen.add(rule)
+        prev_end = pos
 
     # Snakemake's own tally, which counts only rules that COMPLETED.
     m = re.findall(r"(\d+) of (\d+) steps \((\d+)%\) done", txt)
@@ -275,8 +308,13 @@ def main() -> None:
         else:
             print()
             for f in fail["fails"]:
-                oom = "  <- SIGKILL / OOM" if f["oom"] else ""
-                print(f"  FAILED RULE: {f['rule']}   exit {f['exit']}{oom}")
+                if f["oom"]:
+                    tag = "  <- SIGKILL / OOM killer"
+                elif f.get("enomem"):
+                    tag = "  <- ENOMEM at fork (allocation REFUSED, not killed)"
+                else:
+                    tag = ""
+                print(f"  FAILED RULE: {f['rule']}   exit {f['exit']}{tag}")
             if any(f["oom"] for f in fail["fails"]):
                 print()
                 print("  Exit 137 is SIGKILL -- in a SLURM job that is the OOM")
@@ -284,6 +322,20 @@ def main() -> None:
                 print("  Heavy rules are SERIALISED (each declares threads =")
                 print("  n_cpu; verified against snakemake), so --mem covers the")
                 print("  largest single rule, not a sum.")
+            if any(f.get("enomem") for f in fail["fails"]):
+                print()
+                print("  ENOMEM at os.fork() is NOT the OOM killer. There is a")
+                print("  full traceback and no oom_kill event: the kernel refused")
+                print("  to admit another address space because the parent was")
+                print("  already too large for the cgroup.")
+                print()
+                print("  RAISE --mem. Lowering --cpus-per-task does NOT help for")
+                print("  the AUCell rules: aucell4r allocates its RawArray ONCE")
+                print("  before forking, not per worker, so the peak is flat in")
+                print("  n_cpu above 1. (This is the opposite of")
+                print("  motif_enrichment_cistarget, where each joblib worker")
+                print("  loads its own database and concurrency IS the")
+                print("  multiplier.)")
             if len(fail["fails"]) > 1:
                 print()
                 print("  MORE THAN ONE rule failed. run_pipeline.sh passes")
