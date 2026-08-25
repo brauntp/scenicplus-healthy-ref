@@ -354,6 +354,51 @@ bash 03_pipeline/create_env.sh --repair-pins
 That force-reinstalls the pinned versions under constraint, reinstalls the git
 packages, repairs what `pip check` reports within the pins, and re-verifies.
 
+## The pipeline completed — what to read
+
+`scplusmdata.h5mu` written, 41 GB (job 10721524). All twelve rules done.
+
+**Do not start with the 41 GB object.** ~99% of it is the input matrices carried
+through (scATAC 37.2 GB + scRNA 3.2 GB); the AUC layers it adds are 0.26 GB, and
+assembly took 21 s. The biology is in the two eRegulon tables:
+
+```bash
+python 05_report/summarize_eregulons.py \
+    --direct 03_pipeline/eRegulon_direct.tsv \
+    --extended 03_pipeline/eRegulons_extended.tsv \
+    --out-prefix docs/eregulon_summary
+```
+
+Login-node safe — it reads the TSVs, never the h5mu. It reports eRegulon and TF
+counts per set, the activator/repressor split parsed from the
+`TF_[direct|extended]_[+|-]/[+|-]` names, a per-eRegulon table of region and gene
+counts, and it cross-references the four caveats below so no count is reported
+without the reason it might be thin.
+
+### Four caveats, in the order they bite
+
+1. **Three groups produced no region set at all** — Pro-Monocyte (1 independent
+   metacell), cDC (2), Late GMP (3). No eRegulon can be specific to them. This is
+   the pairing's independence accounting, not a filter you can relax.
+2. **Stromal retained 60% of its regions** through the `fraction_overlap 0.4`
+   database mapping, against 96% for HSC_MPP. Its eRegulons rest on the thinnest
+   base — expected for a stromal set from a haematopoietic reference meeting a
+   SCREEN cCRE database built mostly on blood and cell lines.
+3. **Both erythroid groups were the worst cross-modal alignments** in pairing QC
+   (`docs/QC_RESULT.md`). Thin erythroid results are that gap surfacing
+   downstream, not a pipeline failure.
+4. **Structural, and the most important:** region sets are label-driven DARs
+   (one-vs-rest per cell type). That finds cell-type-associated regulons well and
+   shared or continuous programs poorly. **A TF absent from these results may be
+   active everywhere rather than nowhere.**
+
+### Recording the real memory figures
+
+Every `--mem` figure in `docs/MEMORY.md` for these rules is derived from reading
+source, not measured at this scale. The closing banner now prints the `sacct`
+command with this job's id and `--mem` substituted; run it and record the real
+MaxRSS, so the next reference is sized from measurement.
+
 ### Serial AUCell worked: 28 min, both outputs written
 
 Job 10721352 at `--cpus-per-task 1`: `AUCell_extended.h5mu` (87 MB) in 12.9 min,

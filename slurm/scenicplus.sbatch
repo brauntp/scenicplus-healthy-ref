@@ -419,9 +419,13 @@ if [[ "$RC" -eq 0 ]]; then
     # Read the directive rather than naming a number: this line said "the 54G
     # here" long after --mem had moved to 128G and then 192G, so it advised
     # checking a figure the job never requested.
-    echo "  - sacct -j \$SLURM_JOB_ID --format=JobID,MaxRSS,Elapsed,State"
+    # NOT escaped: these must EXPAND. An earlier version wrote \$SLURM_JOB_ID,
+    # which printed the literal text for the user to retype -- the same defect
+    # already fixed once in fix_cxxabi.sh's closing advice. My local test used
+    # the unescaped form, so it passed while the shipped file did not expand.
+    echo "  - sacct -j ${SLURM_JOB_ID:-<job-id>} --format=JobID,MaxRSS,Elapsed,State"
     echo "    against the --mem this job actually requested"
-    echo "    (\$((\${SLURM_MEM_PER_NODE:-0} / 1024))G). Every figure in"
+    echo "    ($(( ${SLURM_MEM_PER_NODE:-0} / 1024 ))G). Every figure in"
     echo "    docs/MEMORY.md for the rules that ran here is derived from source"
     echo "    reading, not measured at this scale -- record the real MaxRSS."
 else
