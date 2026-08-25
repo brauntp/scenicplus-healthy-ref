@@ -67,7 +67,8 @@
 #
 # Start at 240G. If the job dies with no python traceback -- just "Killed" or a
 # bare nonzero exit -- that is the OOM killer, not a bug: check
-# `seff $SLURM_JOB_ID` / `sacct -j $SLURM_JOB_ID -o MaxRSS` and raise.
+# `seff $SLURM_JOB_ID` / `sacct -j $SLURM_JOB_ID -o JobID,MaxRSS` and raise --
+# reading the `.0` (run_pipeline) step, since `.batch` is the empty shell.
 # MEASURED, not projected: 54G. The paired object is 40.4 GB dense and the
 # probe measured a 1.07x overhead through both .to_df() calls (peak 43.2 GB,
 # +25% headroom). The QC job independently hit 43.2 GB MaxRSS on the same
@@ -423,7 +424,14 @@ if [[ "$RC" -eq 0 ]]; then
     # which printed the literal text for the user to retype -- the same defect
     # already fixed once in fix_cxxabi.sh's closing advice. My local test used
     # the unescaped form, so it passed while the shipped file did not expand.
-    echo "  - sacct -j ${SLURM_JOB_ID:-<job-id>} --format=JobID,MaxRSS,Elapsed,State"
+    # MaxRSS lives on the `.0` (run_pipeline) srun step, NOT on `.batch` --
+    # this script launches the pipeline under srun, so the batch shell itself
+    # reads ~0.01G. Grep for the step that did the work, or the number looks
+    # like ~10 MB.
+    echo "  - sacct -j ${SLURM_JOB_ID:-<job-id>} --units=G \\"
+    echo "        --format=JobID%-16,JobName%-14,State,Elapsed,ReqMem,MaxRSS,AllocCPUS \\"
+    echo "      | grep -E 'JobID|run_pipeline|^-'"
+    echo "    (the .0 step carries MaxRSS; .batch is the empty shell)"
     echo "    against the --mem this job actually requested"
     echo "    ($(( ${SLURM_MEM_PER_NODE:-0} / 1024 ))G). Every figure in"
     echo "    docs/MEMORY.md for the rules that ran here is derived from source"

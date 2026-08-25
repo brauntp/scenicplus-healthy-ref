@@ -392,12 +392,39 @@ without the reason it might be thin.
    shared or continuous programs poorly. **A TF absent from these results may be
    active everywhere rather than nowhere.**
 
-### Recording the real memory figures
+### The measured memory figures
 
-Every `--mem` figure in `docs/MEMORY.md` for these rules is derived from reading
-source, not measured at this scale. The closing banner now prints the `sacct`
-command with this job's id and `--mem` substituted; run it and record the real
-MaxRSS, so the next reference is sized from measurement.
+`docs/MEMORY.md` now leads with `sacct` measurements rather than derived
+estimates. Three things worth knowing before sizing anything again.
+
+**MaxRSS is on the `.0` step, not `.batch`.** This script runs the pipeline under
+`srun`, so the batch shell is empty (0.01G on every job) and the numbered step
+carries the real figure. Filter:
+
+```bash
+sacct --name=scenicplus -S 2026-08-23 --units=G \
+  --format=JobID%-16,JobName%-14,State,Elapsed,ReqMem,MaxRSS,AllocCPUS \
+  | grep -E 'JobID|run_pipeline|^-'
+```
+
+**MaxRSS above ReqMem is real data, not corruption.** The two fork failures
+report 506G and 592G against 192G and 128G limits with *no* OOM kill, while the
+jobs that were killed sit just under their limits. MaxRSS sums the process tree
+and counts copy-on-write pages once per process, so the excess measures sharing —
+dividing by the serial parent's 82.26G gives parent + ~5 and ~6 children. `fork()`
+did not fail on the first call; it failed after several succeeded, which is why
+raising `--mem` changed nothing.
+
+**One estimate was 2× too high.** I documented cisTarget's per-worker cost as
+`rccs` plus a `df_rccs` copy (44.9 GB). The 2-worker measurement (47.74G) fits
+`rccs` alone at ~22.4 GB, because `rccs` is subset to enriched motifs and rebound
+*before* `df_rccs` wraps it. **At 22.4 GB per worker, 128G fits 5 workers and 192G
+fits 7 — not the 2 I recommended.** cisTarget is complete, so nothing to redo;
+don't carry the 2-worker figure to the next reference.
+
+The two derived figures that held: AUCell serial (81 predicted, 82.26 measured)
+and `scplus_mudata` (41 vs 41.47). `region_to_gene` and `tf_to_gene` are still
+unmeasured — both ran inside a job whose MaxRSS is inflated by AUCell's forks.
 
 ### Serial AUCell worked: 28 min, both outputs written
 

@@ -1,3 +1,118 @@
+# Memory: MEASURED figures
+
+**Read this section first — everything below it is the reasoning that produced
+these numbers, some of which the measurements corrected.**
+
+`sacct --name=scenicplus -S 2026-08-23 --format=JobID,JobName,State,Elapsed,ReqMem,MaxRSS,AllocCPUS --units=G`
+
+| job | rule(s) | cpus | ReqMem | MaxRSS | state | elapsed |
+|---|---|---|---|---|---|---|
+| 10717235 | cisTarget | 16 | 54G | 52.91G | OUT_OF_MEMORY | 00:02:41 |
+| 10717270 | cisTarget | 16 | 128G | 120.27G | OUT_OF_MEMORY | 01:37:11 |
+| 10719633 | cisTarget | **2** | 128G | **47.74G** | COMPLETED | 00:29:51 |
+| 10721206 | eGRN + AUCell | 16 | 128G | 592.07G | FAILED (fork) | 02:23:11 |
+| 10721324 | AUCell | 16 | 192G | 506.81G | FAILED (fork) | 01:28:31 |
+| 10721352 | AUCell | **1** | 192G | **82.26G** | COMPLETED | 00:28:53 |
+| 10721524 | scplus_mudata | 16 | 192G | **41.47G** | COMPLETED | 00:01:58 |
+
+## Which step row carries MaxRSS
+
+**The `.0` step, not `.batch`.** Every job here has three or four rows and only
+one holds a usable number:
+
+| row | 10721524 MaxRSS | what it is |
+|---|---|---|
+| `10721524` | *blank* | the allocation; sacct records no RSS on it |
+| `10721524.batch` | 0.01G | the batch shell — it only runs `srun`, so ~nothing |
+| `10721524.extern` | 0.00G | the external step SLURM adds for the allocation |
+| `10721524.0` | **41.47G** | `run_pipeline.+` — the srun step doing the work |
+
+This holds for every job in the table below: `.batch` is 0.01G throughout while
+`.0` carries 47.74G, 592.07G, 506.81G, 82.26G, 41.47G. Because
+`slurm/scenicplus.sbatch` launches the pipeline under `srun`, the work lives in a
+numbered step and the batch shell stays empty. A job that ran the pipeline
+*directly* in the batch script would show the opposite, which is why this is
+worth stating rather than assuming.
+
+Filter to the step that did the work:
+
+```bash
+sacct --name=scenicplus -S 2026-08-23 \
+  --format=JobID%-16,JobName%-14,State,Elapsed,ReqMem,MaxRSS,AllocCPUS \
+  --units=G | grep -E 'JobID|run_pipeline|^-'
+```
+
+Reading `.batch` instead would suggest these jobs used ~10 MB.
+
+## Reading MaxRSS above ReqMem
+
+Two rows report MaxRSS 3–4× ReqMem **without an OOM kill**, which cannot be true
+residency: the kernel would have killed them. The rows that *were* OOM-killed sit
+just under their limits (52.91/54, 120.27/128) — exactly what a real ceiling looks
+like.
+
+`MaxRSS` sums RSS across the process tree, and a forked child's copy-on-write
+pages are resident in **both** parent and child, so shared pages are counted
+once per process. Unique residency stayed under the limit; that is why no kill
+fired.
+
+That makes the excess a measurement of *sharing*, i.e. how far the fork loop got
+before one call was refused:
+
+| job | MaxRSS | ÷ serial parent (82.26G) | implies |
+|---|---|---|---|
+| 10721324 | 506.81G | 6.2 | parent + ~5 children forked |
+| 10721206 | 592.07G | 7.2 | parent + ~6 children forked |
+
+**This confirms the fork diagnosis and refines it.** `fork()` did not fail on the
+first call — five or six children were created, then one was refused. Progressive
+exhaustion of a commit budget, not a single oversized request. And it is why
+128G → 192G changed nothing: each fork adds the parent's ~82 GB to the commit
+charge whatever the cgroup limit is.
+
+## Predictions vs measurements
+
+| quantity | predicted | measured | verdict |
+|---|---|---|---|
+| AUCell serial | ~81 GB | **82.26 GB** | held, 1.5% |
+| `scplus_mudata` | ~41 GB | **41.47 GB** | held, 1.1% |
+| cisTarget, per worker | 44.9 GB | **~22.4 GB** | **2× too high** |
+| cisTarget, 2 workers | 92.1 GB | **47.74 GB** | consequence of the above |
+| `region_to_gene` | 54 GB | — | never isolated; ran inside 10721206 |
+
+### The cisTarget over-estimate, and why
+
+I documented the per-worker cost as `rccs` **plus** a `df_rccs` copy, 44.9 GB.
+The 2-worker measurement fits `rccs` **alone**: 2 × 22.4 = 44.85 GB against
+47.74 GB measured, leaving 2.89 GB for the parent, the database slices and the
+interpreter.
+
+Reading the source again shows why. Before `df_rccs` is built, `rccs` is
+**subset and rebound**:
+
+```python
+rccs = rccs[enriched_features_idx, :]        # only enriched motifs survive
+...
+df_rccs = pd.DataFrame(..., data=rccs)
+```
+
+The full 32,765-motif matrix is unreferenced by then, and `df_rccs` wraps a few
+hundred enriched motifs — sub-GB. I had read the two allocations as coexisting.
+
+**Consequence for the next reference:** at 22.4 GB per worker, `--mem=128G` fits
+**5** workers and `--mem=192G` fits **7**, not the 2 I recommended. cisTarget took
+29.9 min at 2 workers; 5 would have been roughly 12 min. Nothing to redo here —
+cisTarget is complete — but do not carry the 2-worker figure forward.
+
+## What is still unmeasured
+
+`region_to_gene` and `tf_to_gene` never ran in a job by themselves — both are
+inside 10721206, whose MaxRSS is inflated by AUCell's forks. The 54 GB figure for
+`region_to_gene` remains derived. If the next reference needs it, run that rule
+alone with `--target region_to_gene_adj.tsv`.
+
+---
+
 # The ~96G region-to-gene figure was 2.2× too high — measured on the cluster
 
 The probe ran on the real object in the real environment:
