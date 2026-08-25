@@ -366,8 +366,26 @@ conda activate scplus-pairing
 bash 05_report/make_plot_bundle.sh
 ```
 
-That builds `05_report/plot_bundle/` and prints the `rsync` line to run on the
-laptop. Login-node safe: both extractors read in blocks/chunks and never
+Then, **from the laptop** (not from ARC):
+
+```bash
+mkdir -p ~/comp_ws/scenicplus_bundle
+rsync -avhP --stats \
+  arc:/home/groups/MaxsonLab/braun/analysis/scenicplus-healthy-ref/05_report/plot_bundle/ \
+  ~/comp_ws/scenicplus_bundle/
+```
+
+`arc:` is the **ssh config Host alias**, not a hostname. `rsync` shells out to
+`ssh`, which reads `~/.ssh/config`, so the alias resolves and the two-hop login
+(`acc.ohsu.edu` then `arc.ohsu.edu`) collapses to one step exactly as `ssh arc`
+does. An earlier version of this printed `${USER}@arc-infra-1:` — the login node's
+internal name, which is not reachable from off-cluster and would have failed.
+
+The trailing slash on the source is load-bearing: with it you get the *contents*
+in `scenicplus_bundle/`; without it a nested `plot_bundle/` inside it.
+
+Check the `--stats` total: a few hundred MB means the bundle. Tens of GB means the
+path is wrong and you are pulling the paired object — kill it. Login-node safe: both extractors read in blocks/chunks and never
 materialise a whole matrix.
 
 ### Why the bundle is small

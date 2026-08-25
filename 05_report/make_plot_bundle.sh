@@ -80,8 +80,17 @@ if (( LINK_RC == 0 && EXTR_RC == 0 )); then
     echo "=== pull it down (run this on the LAPTOP, not here) ==="
     echo "    mkdir -p ~/comp_ws/scenicplus_bundle"
     echo "    rsync -avhP --stats \\"
-    echo "      ${USER}@arc-infra-1:${PWD}/${OUT}/ \\"
+    echo "      arc:${PWD}/${OUT}/ \\"
     echo "      ~/comp_ws/scenicplus_bundle/"
+    echo
+    echo "  'arc' is the ssh config Host alias, NOT this node's hostname."
+    echo "  rsync shells out to ssh, which reads ~/.ssh/config, so the alias"
+    echo "  resolves and any ProxyJump/User in it applies -- the two-hop login"
+    echo "  (acc.ohsu.edu then arc.ohsu.edu) collapses to one step exactly as"
+    echo "  'ssh arc' does. Do not substitute \$(hostname) here: the login"
+    echo "  node's internal name is not reachable from off-cluster."
+    echo "  Trailing slash on the source is load-bearing: with it you get the"
+    echo "  CONTENTS; without it a nested plot_bundle/ directory."
     echo
     echo "  Do NOT rsync scplusmdata.h5mu (41 GB, ~99% input matrices)."
     echo "  peak_gene_links.README.md travels with the data and carries the"
