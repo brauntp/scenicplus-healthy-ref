@@ -742,10 +742,16 @@ if [[ $rc -ne 0 ]]; then
     echo "      AUCell_extended, where aucell4r allocates a RawArray of" >&2
     echo "      n_cells x n_regions BEFORE forking, on top of the paired object and" >&2
     echo "      both rank matrices (~118 GB at this reference's size)." >&2
-    echo "      RAISE --mem. Lowering --cpus-per-task does NOT help: the RawArray is" >&2
-    echo "      allocated once, not per worker, so the peak is flat in n_cpu above 1." >&2
-    echo "      (n_cpu=1 does take a serial branch that skips the RawArray, but it" >&2
-    echo "      still needs ~81 GB and makes AUCell single-threaded.)" >&2
+    echo "      Set --cpus-per-task 1. MORE --mem does NOT fix it: 128G and 192G" >&2
+    echo "      both failed with a byte-identical traceback, on a 400 GB+ node," >&2
+    echo "      while enriching the 3.2 GB GENE matrix -- so allocation size was" >&2
+    echo "      never the constraint. Under strict overcommit the kernel charges" >&2
+    echo "      each fork its worst case instead of trusting copy-on-write, so a" >&2
+    echo "      ~81 GB parent cannot fork 16 ways at any --mem." >&2
+    echo "      aucell4r takes a SERIAL branch at num_workers == 1 (no RawArray," >&2
+    echo "      no Process, no fork). Run the two AUCell rules alone:" >&2
+    echo "        sbatch --cpus-per-task=1 slurm/scenicplus.sbatch \\" >&2
+    echo "            --target AUCell_direct.h5mu --target AUCell_extended.h5mu" >&2
     echo "    - 'No space left on device'     -> params_general.temp_dir filled up." >&2
     echo "    - logs are under ${WORKDIR}/.snakemake/log/" >&2
     echo "" >&2

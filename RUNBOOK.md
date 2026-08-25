@@ -354,7 +354,7 @@ bash 03_pipeline/create_env.sh --repair-pins
 That force-reinstalls the pinned versions under constraint, reinstalls the git
 packages, repairs what `pip check` reports within the pins, and re-verifies.
 
-### AUCell failed at fork — raise `--mem`, do not touch `--cpus-per-task`
+### AUCell failed at fork — run it at `--cpus-per-task 1`
 
 Both eGRN rules completed (`eRegulon_direct.tsv`, `eRegulons_extended.tsv` are
 banked). `AUCell_direct` and `AUCell_extended` then failed at 128 GB with
@@ -369,19 +369,41 @@ kernel refused to admit another address space because the parent was already
 object, *both* rank matrices held simultaneously, and `aucell4r`'s
 `RawArray(uint32)` for the region matrix.
 
-**`--cpus-per-task` is the wrong lever here**, and this is the trap: it was the
-*right* lever for `motif_enrichment_cistarget`. cisTarget loads its database once
-per joblib worker, so concurrency multiplies the peak. `aucell4r` allocates its
-`RawArray` **once** and only then forks, so the peak is flat in `n_cpu` above 1.
+**I first said to raise `--mem`. That was wrong** — the 192 GB rerun failed with a
+byte-identical traceback. Four things show size was never the constraint:
 
-Just resubmit — `--mem` is now 192 GB:
+- it failed on `gex_AUC`, the **3.2 GB gene** matrix, before the 37 GB region
+  array existed
+- 128 GB and 192 GB gave the same traceback at the same call site
+- the node (`cnode-08-26`, `batch`) has 400 GB+
+- resident at that point is ~81 GB
+
+`fork()` duplicates page tables, and under strict overcommit the kernel charges
+the child's worst case rather than trusting copy-on-write. A ~81 GB parent
+forking 16 children implies a commit charge no `--mem` here can satisfy.
+
+**`aucell4r` takes a serial branch at `num_workers == 1`** — no `RawArray`, no
+`Process`, no `fork` (verified in the pySCENIC source). Two steps:
 
 ```bash
 git pull
+
+# 1. AUCell only, single-threaded -- no fork at all
+sbatch --cpus-per-task=1 slurm/scenicplus.sbatch \
+    --target AUCell_direct.h5mu --target AUCell_extended.h5mu
+
+# 2. then the final assembly at normal width
 sbatch slurm/scenicplus.sbatch
 ```
 
-Remaining: `AUCell_direct`, `AUCell_extended`, `scplus_mudata`.
+Step 2 finds both AUC files present and runs only `scplus_mudata`, which reads
+the paired object plus the two AUC objects (~41 GB) single-threaded — no fork,
+not memory-bound.
+
+Note the asymmetry with `motif_enrichment_cistarget`: there, each joblib worker
+loaded its **own** database, so concurrency multiplied a genuine allocation. Here
+concurrency multiplies a *commit charge* against a parent that is already large.
+Different mechanism, same remedy — fewer workers.
 
 ### cisTarget succeeded at `--cpus-per-task 2` (job 10719633)
 

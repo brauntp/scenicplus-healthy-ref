@@ -136,9 +136,23 @@
 #      this is NOT the uint32 the ranking values are cast to)
 #   aucell4r RawArray(c_uint32) for the region matrix  37.2 GB
 #
-# --cpus-per-task does NOT help: the RawArray is allocated once, not per worker,
-# so the peak is flat in n_cpu above 1. This is the opposite of
-# motif_enrichment_cistarget, where concurrency WAS the multiplier.
+# CORRECTION (after the 192G run failed IDENTICALLY): raising --mem does not fix
+# it and --cpus-per-task IS the lever. The evidence:
+#
+#   1. It failed on gex_AUC -- the GENE matrix (3.2 GB), the small one. The
+#      37 GB region RawArray had not been allocated yet.
+#   2. 128G -> 192G produced a byte-identical traceback.
+#   3. cnode-08-26 is on `batch`, which has 400 GB+ nodes.
+#
+# fork() duplicates page tables and, under strict overcommit accounting, the
+# kernel charges the child's worst case rather than trusting copy-on-write. A
+# parent holding ~81 GB (paired object + BOTH rank matrices) forking 16 children
+# implies a commit charge no --mem on this cluster can satisfy.
+#
+# aucell4r takes a SERIAL branch at num_workers == 1 -- verified in the pySCENIC
+# source: no RawArray, no Process, no fork. That is the fix, and it is why
+# AUCell must run as a --target subset at --cpus-per-task 1 rather than by
+# raising memory here. See RUNBOOK.md.
 #SBATCH --mem=192G
 
 # --- walltime ----------------------------------------------------------------

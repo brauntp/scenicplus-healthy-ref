@@ -228,7 +228,45 @@ Two details that make this larger than it looks:
 Then `os.fork()` must succeed. At ~118 GB inside a 128 GB cgroup there is no
 headroom to admit the child, and fork returns ENOMEM.
 
-### `--cpus-per-task` does NOT help here
+### CORRECTION: `--cpus-per-task` IS the lever, `--mem` is not
+
+The 192 GB rerun failed with a **byte-identical** traceback. That retires the
+sizing argument below, which I had reasoned out rather than tested. Four
+observations settle it:
+
+1. **It failed on `gex_AUC` — the gene matrix.** That ranking is 3.2 GB; the
+   37 GB region `RawArray` had not been allocated yet. The failing allocation
+   was small.
+2. **128 GB and 192 GB produced the same traceback**, at the same call site.
+3. **The node was `cnode-08-26` on `batch`**, whose nodes carry 400 GB+.
+4. Resident at that point is the paired object plus both rank matrices, ~81 GB —
+   comfortably inside 192 GB.
+
+So this was never an allocation-size failure. `fork()` duplicates page tables,
+and under strict overcommit accounting the kernel charges the child's worst case
+instead of trusting copy-on-write. A parent holding ~81 GB forking 16 children
+implies a commit charge no `--mem` on this cluster can satisfy — which is exactly
+why raising it changed nothing.
+
+**`aucell4r` takes a serial branch at `num_workers == 1`** — verified in the
+pySCENIC source: the branch contains no `RawArray`, no `Process`, and no `fork`.
+That is the fix.
+
+```bash
+sbatch --cpus-per-task=1 slurm/scenicplus.sbatch \
+    --target AUCell_direct.h5mu --target AUCell_extended.h5mu
+```
+
+`--cpus-per-task` sets `n_cpu`, which reaches `aucell4r` unchanged as
+`num_workers` (via `signature_enrichment`). Verified against snakemake that
+naming two targets builds those two and leaves `scplus_mudata` alone.
+
+Cost: the serial branch loops `enrichment4cells` over signatures instead of
+chunking them across workers. Same total work, unmeasured wall time — neither
+attempt reached a single worker, so there is no parallel baseline to compare
+against.
+
+### Superseded reasoning: why I thought `--cpus-per-task` would not help
 
 This is the **opposite** of `motif_enrichment_cistarget`, and conflating them
 wastes a run:
