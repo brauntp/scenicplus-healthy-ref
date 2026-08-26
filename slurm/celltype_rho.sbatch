@@ -17,16 +17,19 @@
 #SBATCH --job-name=celltype_rho
 #SBATCH --partition=batch
 #SBATCH --cpus-per-task=2
-# 16G against a measured peak of ~2.5 GB for a 4,000-region block (the block,
-# its argsort order array, and the rank matrix are live together; the factor is
-# 5-6.5x the block's float32 size, measured in this project). The margin is for
-# the per-group gene-expression rank matrices held across blocks.
-#SBATCH --mem=16G
-# Measured, not guessed: argsort is 166 us per (region, group), which over
-# 360,980 regions x 23 groups is ~23 min; the correlation half is ~48 min
-# (18.01 s per 50,000 pairs at n=5,058, scaled by each group's n). ~1.2 h
-# single-core total, so 6 h is ~5x margin.
-#SBATCH --time=06:00:00
+# 8G. MEASURED: job 10732007 peaked at 4.44 GB (sacct .batch row) against my
+# pre-run estimate of ~2.5 GB -- 1.8x UNDER, because the estimate counted only
+# the streaming block and ignored the two persistent gene-rank structures. The
+# accounting: per-group gene rank dict 1.70 GB + the full gene matrix 1.70 GB
+# live together in phase 1 (3.40 GB), then ranks 1.70 + block work 1.51 GB in
+# phase 2 (3.21 GB); the remainder is interpreter overhead. 8G is ~1.8x the
+# measured peak. The first run requested 16G, which was 3.6x headroom.
+#SBATCH --mem=8G
+# MEASURED: job 10732007 ran in 48m24s wall for all 1,590,176 pairs x 23
+# groups. My pre-run projection was ~72 min (23 min argsort + 48 min
+# correlation), so 1.5x conservative. 2 h keeps ~2.5x margin; 6 h was excessive
+# and only delays scheduling.
+#SBATCH --time=02:00:00
 #SBATCH --output=slurm/logs/%x-%j.out
 #SBATCH --error=slurm/logs/%x-%j.err
 
@@ -111,8 +114,10 @@ if [[ "$RUN_RC" -eq 0 ]]; then
     echo "two routes disagree and that needs explaining before either is used."
     echo
     echo "Record the real cost while the record exists:"
-    echo "  sacct -j ${SLURM_JOB_ID:-<job-id>} --format=JobID,MaxRSS,Elapsed,State --units=G | grep -v '\.batch'"
-    echo "  MaxRSS is on the .0 step, not .batch (.batch is the empty shell)."
+    echo "  sacct -j ${SLURM_JOB_ID:-<job-id>} --format=JobID,JobName%-16,MaxRSS,Elapsed,State --units=G"
+    echo "  Do NOT filter by step name. This script does not use srun, so there"
+    echo "  is no .0 step and MaxRSS is on .batch -- an earlier version of this"
+    echo "  banner printed 'grep -v .batch', which removed the only useful row."
     echo "  Requested: ${SLURM_MEM_PER_NODE:-0} MB."
 else
     echo "Run failed (exit $RUN_RC). A nonzero plan exit with a zero run exit"

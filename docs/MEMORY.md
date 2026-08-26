@@ -15,34 +15,59 @@ these numbers, some of which the measurements corrected.**
 | 10721352 | AUCell | **1** | 192G | **82.26G** | COMPLETED | 00:28:53 |
 | 10721524 | scplus_mudata | 16 | 192G | **41.47G** | COMPLETED | 00:01:58 |
 
+## MEASURED: per-cell-type correlation (job 10732007)
+
+| | |
+|---|---|
+| MaxRSS | **4.44 GB** (`.batch` row -- no `srun`, so no `.0` step) |
+| Elapsed | **48m24s** |
+| Requested | 16G / 6 h -> now **8G / 2 h** |
+| Scope | 1,590,176 pairs x 23 groups, 91 blocks of 4,000 regions |
+
+**My estimate was 1.8x UNDER on memory and 1.5x over on time.** The memory miss
+has a specific cause worth remembering: I sized the job from the streaming block
+alone (~2.5 GB) and ignored two persistent structures that dominate it.
+
+| component | GB |
+|---|---|
+| per-group gene rank dict (persistent across all blocks) | 1.70 |
+| full gene expression matrix, live until `del Xg` | 1.70 |
+| block + int64 argsort order + rank matrix | 1.51 |
+
+Peak is not the sum -- `Xg` is freed before block streaming starts -- so phase 1
+holds 3.40 GB and phase 2 holds 3.21 GB, with the rest interpreter overhead.
+**The lesson generalises: streaming bounds the block, not the things held across
+blocks.** When sizing a streaming job, count what persists as well.
+
 ## Which step row carries MaxRSS
 
-**The `.0` step, not `.batch`.** Every job here has three or four rows and only
-one holds a usable number:
+**It depends on whether the script uses `srun`, and most of ours do not.**
+An earlier version of this section stated "the `.0` step, not `.batch`" as a
+universal rule. That was generalised from `scenicplus.sbatch` and is wrong for
+every other job here -- `celltype_rho` (job 10732007) has **no `.0` step at all**,
+and the advice printed in its own banner (`grep -v '\.batch'`) would have
+filtered out the only row carrying a number.
 
-| row | 10721524 MaxRSS | what it is |
+| script | runs work under `srun`? | MaxRSS row |
 |---|---|---|
-| `10721524` | *blank* | the allocation; sacct records no RSS on it |
-| `10721524.batch` | 0.01G | the batch shell — it only runs `srun`, so ~nothing |
-| `10721524.extern` | 0.00G | the external step SLURM adds for the allocation |
-| `10721524.0` | **41.47G** | `run_pipeline.+` — the srun step doing the work |
+| `scenicplus.sbatch` | yes | `.0` (`run_pipeline.+`) |
+| `celltype_rho.sbatch` | no | `.batch` |
+| `pairing.sbatch` | no | `.batch` |
+| `qc_paired.sbatch` | no | `.batch` |
+| `region_sets.sbatch` | no | `.batch` |
+| `size_cistarget.sbatch` | no | `.batch` |
 
-This holds for every job in the table below: `.batch` is 0.01G throughout while
-`.0` carries 47.74G, 592.07G, 506.81G, 82.26G, 41.47G. Because
-`slurm/scenicplus.sbatch` launches the pipeline under `srun`, the work lives in a
-numbered step and the batch shell stays empty. A job that ran the pipeline
-*directly* in the batch script would show the opposite, which is why this is
-worth stating rather than assuming.
-
-Filter to the step that did the work:
+**Do not filter by step name.** Print every row and read the largest:
 
 ```bash
-sacct --name=scenicplus -S 2026-08-23 \
-  --format=JobID%-16,JobName%-14,State,Elapsed,ReqMem,MaxRSS,AllocCPUS \
-  --units=G | grep -E 'JobID|run_pipeline|^-'
+sacct -j <job-id> --format=JobID,JobName%-16,MaxRSS,Elapsed,State --units=G
 ```
 
-Reading `.batch` instead would suggest these jobs used ~10 MB.
+For `scenicplus.sbatch` the batch shell is ~0.01G because it only launches
+`srun`; for the others the batch shell *is* the work and carries the real figure.
+The `.extern` row is always ~0 and can be ignored either way.
+
+Reading the wrong row understates a job by two to three orders of magnitude.
 
 ## Reading MaxRSS above ReqMem
 

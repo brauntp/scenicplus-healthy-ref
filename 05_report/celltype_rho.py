@@ -257,8 +257,13 @@ def main():
             del Ra
         del Xa
         if b % 5 == 0:
+            # Clamp to n_reg: the final block is partial, so (b+1)*block
+            # overshoots and printed "364,000/360,980 regions" on the real run.
+            # A progress line claiming more input than exists reads as a data
+            # bug when it is only a display bug.
             print(f"    block {b + 1}/{n_blocks} "
-                  f"({(b + 1) * args.block:,}/{n_reg:,} regions)", flush=True)
+                  f"({min((b + 1) * args.block, n_reg):,}/{n_reg:,} regions)",
+                  flush=True)
 
     res = adj[["region", "target", "Distance"]].copy() if "Distance" in adj.columns \
         else adj[["region", "target"]].copy()

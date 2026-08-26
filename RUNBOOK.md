@@ -612,9 +612,12 @@ without the reason it might be thin.
 `docs/MEMORY.md` now leads with `sacct` measurements rather than derived
 estimates. Three things worth knowing before sizing anything again.
 
-**MaxRSS is on the `.0` step, not `.batch`.** This script runs the pipeline under
-`srun`, so the batch shell is empty (0.01G on every job) and the numbered step
-carries the real figure. Filter:
+**MaxRSS is on the `.0` step, not `.batch`** — *for this script*. It runs the
+pipeline under `srun`, so the batch shell is empty (0.01G) and the numbered step
+carries the real figure. **This does not generalise:** five of our six submit
+scripts do not use `srun` and have no `.0` step at all, so for those the figure
+is on `.batch` and filtering it out discards the only useful row. See the step-row
+table in `docs/MEMORY.md` before reading any other job's memory. Filter:
 
 ```bash
 sacct --name=scenicplus -S 2026-08-23 --units=G \
