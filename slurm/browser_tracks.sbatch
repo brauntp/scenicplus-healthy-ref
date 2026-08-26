@@ -48,7 +48,16 @@ if [[ -f setenv.sh ]]; then
 fi
 
 H5MU="${H5MU:-ACC_GEX.h5mu}"
+# The 13-group table. celltype_rho.sbatch writes the 23-GROUP table
+# (05_report/celltype_rho.tsv); make_usable_subset.py derives this one from it.
+# That derivation step was missing from the repo -- the table had been produced
+# interactively and published without a script -- so this default pointed at a
+# path that never existed on the cluster and stage 3 failed with "not found".
+# Stage 0 below now builds it if absent.
+RHO_FULL="${RHO_FULL:-05_report/celltype_rho.tsv}"
+FLOORS="${FLOORS:-05_report/celltype_rho.detection_floors.csv}"
 LINKS="${LINKS:-05_report/celltype_rho_usable.csv.gz}"
+MIN_MC="${MIN_MC:-400}"
 ANNO="${ANNO:-05_report/anno}"
 OUT="${OUT:-05_report/browser_tracks}"
 GROUP_KEY="${GROUP_KEY:-predicted_CellType_Broad}"
@@ -69,6 +78,30 @@ echo
 
 # Validate BEFORE any long read: a missing input should fail in a second, not
 # after twenty minutes of streaming.
+# Stage 0: derive the 13-group table if it is absent. Cheap (one pass over a
+# 1.59M-row table), and it removes the ordering trap where the job assumed a
+# file that only ever existed on a laptop.
+if [[ ! -e "$LINKS" ]]; then
+    echo "=== [0/4] $LINKS absent -- deriving it from $RHO_FULL ==="
+    if [[ ! -e "$RHO_FULL" || ! -e "$FLOORS" ]]; then
+        echo "ERROR: cannot derive $LINKS: need both" >&2
+        echo "         $RHO_FULL" >&2
+        echo "         $FLOORS" >&2
+        echo "       Run the correlation job first:" >&2
+        echo "         sbatch --partition=batch slurm/celltype_rho.sbatch" >&2
+        exit 1
+    fi
+    python 05_report/make_usable_subset.py --in "$RHO_FULL" --floors "$FLOORS" \
+        --out "$LINKS" --min-metacells "$MIN_MC"
+    SUB_RC=$?
+    echo "subset exit: $SUB_RC"
+    if (( SUB_RC != 0 )); then
+        echo "ERROR: could not build $LINKS; not proceeding." >&2
+        exit "$SUB_RC"
+    fi
+    echo
+fi
+
 MISSING=0
 for f in "$H5MU" "$LINKS" "$ANNO/genome_annotation.tsv" "$ANNO/chromsizes.tsv"; do
     if [[ ! -e "$f" ]]; then
