@@ -8,32 +8,51 @@ WHY THIS EXISTS
 that, and it carries no coordinates for the gene end of each link -- only a
 signed `Distance`. This writes per-cell-type arc tracks that a browser can load.
 
-THE TSS ANCHOR, AND WHY IT IS RECOVERED RATHER THAN LOOKED UP
--------------------------------------------------------------
-An arc needs two endpoints: the peak (which we have) and the gene's TSS (which
-we do not). The obvious route -- look the gene up in a fresh
-`genome_annotation.tsv` -- does NOT reproduce the pipeline's own geometry:
+WHAT `Distance` MEASURES -- READ THIS BEFORE "FIXING" THE ARC LENGTHS
+--------------------------------------------------------------------
+`Distance` is NOT peak-to-TSS. It is the distance from the peak MIDPOINT to the
+GENE BODY interval, and it is **0 whenever the peak lies inside the gene**.
+Straight from `data_wrangling/gene_search_space.py:get_search_space`: the region
+is collapsed to its midpoint (`Start = (Start+End)/2; End = Start+1`), joined
+against the gene annotation's Start/End bounds, and the rows with `Distance == 0`
+are named `regions_per_gene_overlapping_genes`.
 
-  * `get_search_space` (use_gene_boundaries=False by default) builds a promoter
-    per TRANSCRIPT, not per gene. hg38 knownGene has a median of 4 distinct TSS
-    per gene and up to 145, and 86.7% of genes have more than one.
-  * Measured on 4,000 real links against a freshly built annotation: SOME
-    transcript's TSS reproduces the stored |Distance| for only 44.9% of links,
-    and the min-over-transcripts rule for 29.2%. Interval-to-point distance is
-    ruled out entirely (1.0%) -- the distance is peak-MIDPOINT to TSS.
+Measured on 8,000 real links against a freshly built annotation:
 
-So a fresh annotation cannot tell you which transcript anchored a given link,
-and picking the wrong one silently misplaces the arc by a median 1.25 kb.
+    peak midpoint -> gene body interval   71.0% exact, median error 0 bp
+    peak midpoint -> some transcript TSS  44.9% exact
+    peak midpoint -> nearest TSS (min)    29.2% exact
+    peak interval -> TSS                   1.0% exact
 
-What IS exact: `Distance` was computed from the peak midpoint, so the TSS sits
-at `midpoint +/- |Distance|`. That leaves two candidates; this script picks the
-one nearer the gene's annotated TSS set. The result reproduces the stored
-|Distance| EXACTLY by construction (verified: 100% of rows), and lands on an
-annotated TSS exactly for 44.9% of links, within 5 kb for 61.9%, median error
-1.25 kb.
+So the gene-body model is right and the TSS models were coincidence -- they agree
+for compact single-TSS genes, where a gene bound and its TSS nearly coincide.
 
-Do not "fix" this by looking the TSS up directly -- that trades an exact
-reconstruction of the pipeline's geometry for a plausible-looking wrong one.
+The consequence for drawing: **an arc's length should NOT equal `Distance`.** An
+arc runs peak -> promoter (that is what a browser interact track means), while
+`Distance` runs peak -> nearest gene bound. For a 404 kb gene like EBF1 those
+differ by hundreds of kb, and 26 of its 44 Pro-B links have `Distance == 0`
+because the peak is intronic -- a normal intronic enhancer, not a promoter peak.
+
+THE ANCHOR RULE
+---------------
+Pick the gene's annotated transcript whose own distance to the peak best matches
+the stored `Distance`. Two properties matter:
+
+  * every anchor is a REAL annotated TSS of that gene, so arcs for one gene
+    converge on its promoter. An earlier rule that solved `midpoint +/-
+    |Distance|` per link scattered EBF1's 58 arcs over 404 kb of invented
+    coordinates -- in a browser that reads as 58 different targets rather than
+    one gene with 58 enhancers, destroying the thing the picture exists to show.
+    Within-gene anchor span with the shipped rule: median 0 bp, 90th pct 31 bp.
+  * it degrades gracefully for multi-TSS genes, choosing the promoter most
+    consistent with the recorded geometry rather than an arbitrary one.
+
+Do NOT switch to the gene's canonical (most 5') TSS -- tested, and for 11.6% of
+links that puts the peak-to-anchor span outside the +/-150 kb search window the
+pipeline used, i.e. drawing something the analysis could not have produced.
+
+The exact `Distance` travels in the `name` field and in
+`celltype_rho_usable.csv.gz`, so nothing is lost for quantitative use.
 
 `Distance`'s SIGN is strand-relative (upstream/downstream in gene orientation),
 which is why the sign alone cannot orient the arc and the candidate test is
@@ -111,21 +130,26 @@ def unwrap_distance(s: pd.Series) -> pd.Series:
             .astype("Float64").astype("Int64"))
 
 
-def recover_tss(mid: np.ndarray, dist_abs: np.ndarray, genes: np.ndarray,
-                tss_by_gene: dict[str, np.ndarray]) -> tuple[np.ndarray, np.ndarray]:
-    """TSS = mid +/- |Distance|; choose the candidate nearer the gene's
-    annotated TSS set. Returns (tss, error_to_nearest_annotated)."""
-    lo, hi = mid - dist_abs, mid + dist_abs
-    out = np.where(dist_abs == 0, mid, lo).astype(np.int64)
+def anchor_tss(mid: np.ndarray, dist_abs: np.ndarray, genes: np.ndarray,
+               tss_by_gene: dict[str, np.ndarray]) -> tuple[np.ndarray, np.ndarray]:
+    """Rule (b): the gene's annotated transcript whose distance to the peak best
+    matches the stored |Distance|.
+
+    Every returned coordinate is a real annotated TSS of that gene, so arcs for
+    one gene converge on its promoter instead of scattering. Returns
+    (tss, |drawn_length - stored_distance|)."""
+    out = np.zeros(len(mid), dtype=np.int64)
     err = np.full(len(mid), np.nan)
     for i, g in enumerate(genes):
         arr = tss_by_gene.get(g)
         if arr is None:
+            # No annotation for this gene: fall back to rule (a), which at least
+            # preserves the exact distance. Counted and reported.
+            out[i] = mid[i] - dist_abs[i]
             continue
-        dl = np.abs(arr - lo[i]).min()
-        dh = np.abs(arr - hi[i]).min()
-        out[i] = lo[i] if dl <= dh else hi[i]
-        err[i] = min(dl, dh)
+        j = int(np.argmin(np.abs(np.abs(arr - mid[i]) - dist_abs[i])))
+        out[i] = arr[j]
+        err[i] = abs(abs(int(arr[j]) - int(mid[i])) - int(dist_abs[i]))
     return out, err
 
 
@@ -213,7 +237,7 @@ def main() -> None:
         co = parse_regions(sub.region)
         mid = ((co.start + co.end) // 2).to_numpy()
         dist_abs = sub.Distance.abs().astype(np.int64).to_numpy()
-        tss, err = recover_tss(mid, dist_abs, sub.target.to_numpy(), tss_by_gene)
+        tss, err = anchor_tss(mid, dist_abs, sub.target.to_numpy(), tss_by_gene)
         err_all.append(err)
 
         # Score 0-1000 from specificity_z. Scale by the group's own max so each
@@ -272,14 +296,17 @@ def main() -> None:
     e = np.concatenate(err_all)
     e = e[~np.isnan(e)]
     print()
-    print("TSS anchor quality (recovered position vs the gene's annotated TSS set):")
-    print(f"  exact          : {(e == 0).mean():.1%}")
-    print(f"  within 500 bp  : {(e <= 500).mean():.1%}")
-    print(f"  within 5 kb    : {(e <= 5000).mean():.1%}")
-    print(f"  median error   : {np.median(e):,.0f} bp")
-    print("  The anchor reproduces the stored |Distance| exactly by construction;")
-    print("  the error above is against a FRESHLY BUILT annotation, which cannot")
-    print("  identify which transcript the pipeline used (see the module docstring).")
+    print("ARC GEOMETRY -- do not read arc length as `Distance`.")
+    print("  Every anchor is a real annotated TSS, so arcs for one gene converge")
+    print("  on its promoter. But `Distance` measures peak-midpoint to GENE BODY")
+    print("  (0 when the peak is intronic), while an arc runs peak -> promoter.")
+    print("  For a long gene those differ by hundreds of kb by definition, not by")
+    print("  error. The exact `Distance` is in the name field and the source table.")
+    print()
+    print("  |arc length - stored Distance|, for reference only:")
+    print(f"    equal (0 bp) : {(e == 0).mean():.1%}   (compact single-TSS genes)")
+    print(f"    median       : {np.median(e):,.0f} bp")
+    print(f"    90th pct     : {np.quantile(e, 0.9):,.0f} bp")
     print()
     print(f"  wrote {args.out_dir}")
     print("=" * 74)
