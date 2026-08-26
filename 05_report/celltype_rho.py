@@ -267,6 +267,14 @@ def main():
 
     res = adj[["region", "target", "Distance"]].copy() if "Distance" in adj.columns \
         else adj[["region", "target"]].copy()
+    if "Distance" in res.columns:
+        # Upstream writes Distance as a stringified single-element list ("[-126154]")
+        # because scenicplus leaves the .map(lambda x: x[0]) unwrapping commented
+        # out. Carrying it through verbatim is a trap: pd.to_numeric returns
+        # ALL-NaN silently, with no error and no warning. Unwrap here so the
+        # column this script emits is genuinely numeric.
+        res["Distance"] = (res["Distance"].astype(str).str.strip("[]")
+                           .replace("", np.nan).astype("Float64").astype("Int64"))
     res["importance_global"] = adj["importance"].to_numpy()
     res["rho_global"] = adj["rho"].to_numpy()
     for g in keep.index:
