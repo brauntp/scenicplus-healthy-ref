@@ -6,3 +6,8 @@ __pycache__/
 *.pkl
 *.mtx
 .snakemake/
+
+# Read-only reference copy of the pinned upstream Snakefile, fetched on demand
+# by docs/fetch_snakefile.sh. Not vendored: scenicplus v1.0a2 declares
+# "License :: Other/Proprietary License" and ships no LICENCE.txt at that tag.
+docs/reference/

@@ -16,8 +16,12 @@ point of this repo.
 
 SCENIC+ handles non-paired data in `process_non_multiome_data`
 (`src/scenicplus/data_wrangling/adata_cistopic_wrangling.py`), which delegates
-metacell construction to `generate_pseudocells_for_numpy`
-(`src/scenicplus/utils.py`). That function does this, per cell-type label:
+metacell construction to `_generate_pseudocells_for_numpy` — the module-local
+helper at `adata_cistopic_wrangling.py:124`, **not** the public
+`generate_pseudocells_for_numpy` in `src/scenicplus/utils.py`. The two are
+line-for-line identical in body; only the private copy is on this code path
+(the module imports just `Groupby` from `utils`), so read the local one when
+verifying. That function does this, per cell-type label:
 
 ```python
 for x in range(n_pseudobulk):
@@ -148,7 +152,11 @@ rather than a guess.
               run_pipeline.sh        validate, then snakemake
 04_db/        peak_overlap_audit.py  measure DB/peak-set compatibility FIRST
               build_cistarget_db.sh  custom DB on your peaks
+05_report/    summarize_eregulons.py eRegulon tables, peak-gene links, tracks
 slurm/        *.sbatch               submit wrappers (parameterize partition/account)
+docs/         PIPELINE_DAG.md        the Snakefile DAG, which this repo does not contain
+              fetch_snakefile.sh     pull the pinned Snakefile, checksum-verified
+              verify_claims.py       re-derive every number in these docs
 ```
 
 ### Two things that will bite you on the cluster
@@ -183,6 +191,32 @@ slurm/        *.sbatch               submit wrappers (parameterize partition/acc
 | `--min-cells-per-group` | 50 | Below this a cell type cannot support a metacell; raise it rather than trust a thin population. |
 | `--anchor-mode` | `both` | `rna` or `atac` anchors on one modality's geometry when the other is much sparser. |
 | `search_space_upstream/downstream` | 1 kb–150 kb | SCENIC+'s default. Anchor to insulation boundaries rather than a fixed span if you have Hi-C for these cell types. |
+
+---
+
+## Verifying this repo without running it
+
+Every quantitative claim in these docs is re-derivable from its source, and one
+command checks them all:
+
+```bash
+bash docs/fetch_snakefile.sh    # pull the pinned Snakefile (verifies SHA256)
+python docs/verify_claims.py    # re-derive every stated number; exit 1 on drift
+```
+
+`verify_claims.py` recomputes the pairing table and the AUROC degradation
+figures above from `docs/pairing_sensitivity.csv`, re-derives the database
+arithmetic in `docs/DATABASE_DECISION.md`, and checks the structural claims this
+repo makes about the Snakefile against the Snakefile itself. Anything it could
+not check is reported as `NOT CHECKED` rather than passing quietly — an absent
+input is not evidence a claim holds.
+
+**The Snakefile is not in this repository.** It ships inside the installed
+`scenicplus` package and is resolved at runtime, so the DAG is invisible at
+review time unless you build the env first. `docs/PIPELINE_DAG.md` is the map:
+all 13 rules with their inputs, outputs and line numbers, where this repo's
+custom pairing step substitutes for `prepare_GEX_ACC`, and the dry-run check
+that confirms the substitution held before you spend cluster hours.
 
 ---
 
