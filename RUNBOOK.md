@@ -1,7 +1,16 @@
-# Cluster runbook (ARC)
+# Cluster runbook (ARC) — the long version
 
-Copy-paste order of operations. Every command is one of: **login node** (cheap,
-minutes) or **sbatch** (queued). Nothing here needs the analysis sandbox.
+> **Looking for the steps to run?** Use **[`PROTOCOL.md`](PROTOCOL.md)** — the
+> clean linear path, seven steps, no troubleshooting.
+>
+> This file is the **engineering record**: the same stages, plus every failure
+> this project actually hit and how it was diagnosed. Come here when something
+> breaks, when you need the measured memory figures, or when you want to know
+> why a step is written the way it is. It is not meant to be read start to
+> finish.
+
+Every command is one of: **login node** (cheap, minutes) or **sbatch** (queued).
+Nothing here needs the analysis sandbox.
 
 Placeholders to fill once, then reuse: `<ARC_ACCOUNT>`, `<ARC_PARTITION>`,
 `<N_CPU>`, `<MEM>`, `<HH:MM:SS>`, `<CONDA_BASE>`, `<NODE_SCRATCH_ROOT>`.

@@ -7,6 +7,15 @@ Built to run on the cluster: the analysis sandbox this was authored in cannot
 reach ARC, so every script validates its own inputs, fails loudly, and logs what
 it did. Nothing here assumes a successful previous step.
 
+> **To run it:** [`PROTOCOL.md`](PROTOCOL.md) — seven steps, every command in
+> order, with the check after each one. No troubleshooting.
+>
+> **When it breaks:** [`RUNBOOK.md`](RUNBOOK.md) — every failure this project
+> hit, with the diagnosis and fix.
+>
+> **This file** explains *why* the pipeline is built the way it is. Read the
+> next section before interpreting any result.
+
 ---
 
 ## The one design decision that matters
@@ -154,6 +163,8 @@ rather than a guess.
               build_cistarget_db.sh  custom DB on your peaks
 05_report/    summarize_eregulons.py eRegulon tables, peak-gene links, tracks
 slurm/        *.sbatch               submit wrappers (parameterize partition/account)
+PROTOCOL.md                          the seven-step run path  <-- start here
+RUNBOOK.md                           troubleshooting + engineering record
 docs/         PIPELINE_DAG.md        the Snakefile DAG, which this repo does not contain
               fetch_snakefile.sh     pull the pinned Snakefile, checksum-verified
               verify_claims.py       re-derive every number in these docs
