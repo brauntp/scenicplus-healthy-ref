@@ -13,6 +13,9 @@ it did. Nothing here assumes a successful previous step.
 > **When it breaks:** [`RUNBOOK.md`](RUNBOOK.md) — every failure this project
 > hit, with the diagnosis and fix.
 >
+> **To review it:** [`REVIEW_MAP.md`](REVIEW_MAP.md) — which ~300 lines of the
+> 19,000 actually encode science, and what to ask of each.
+>
 > **This file** explains *why* the pipeline is built the way it is. Read the
 > next section before interpreting any result.
 
@@ -165,6 +168,7 @@ rather than a guess.
 slurm/        *.sbatch               submit wrappers (parameterize partition/account)
 PROTOCOL.md                          the seven-step run path  <-- start here
 RUNBOOK.md                           troubleshooting + engineering record
+REVIEW_MAP.md                        reviewer triage: the 300 lines that matter
 docs/         PIPELINE_DAG.md        the Snakefile DAG, which this repo does not contain
               fetch_snakefile.sh     pull the pinned Snakefile, checksum-verified
               verify_claims.py       re-derive every number in these docs
