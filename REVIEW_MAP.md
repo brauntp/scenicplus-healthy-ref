@@ -148,34 +148,72 @@ named risk.
 
 ---
 
-## Tier 3 — Support code (skip)
+## Tier 3 — Support code
 
-Cannot change a number in a results table. Read only if you are using the tool
-or debugging it.
+None of these can change a number in a results table. But "skip it" is worth
+more if you know *how the file is reached*, so each is tagged by reachability,
+verified against the invoking scripts rather than assumed:
 
-**Inspectors / structural readers (read-only):** `00_inspect/inspect_anndata.py`,
-`inspect_h5ad_lite.py`, `compare_labels.py`, `03_pipeline/peek_h5mu.py`,
-`04_db/peaks_to_bed.py`
+**A — runs inside a job.** Executes during a pipeline run. Skip for scientific
+review, but a bug here can still fail your job.
 
-**Sizing / status / diagnostics:** `03_pipeline/pipeline_status.py`,
-`probe_region_to_gene_memory.py`, `size_cistarget_memory.py`, `_check_pins.py`
+`03_pipeline/peek_h5mu.py` (called by `slurm/qc_paired.sbatch:64`,
+`slurm/check_pairing.sh:119`) · `03_pipeline/pipeline_status.py` ·
+`03_pipeline/size_cistarget_memory.py` · `04_db/peaks_to_bed.py` ·
+`05_report/extract_for_plots.py` · `export_accessibility_tracks.py` ·
+`export_browser_tracks.py`
 
-**Post-hoc characterisation (reports on dropped peaks, changes nothing):**
-`04_db/characterize_dropped.py`, `reanalyze_dropped.py`
+**B — run by hand.** Never executes on its own; you invoke it from a documented
+command. Read only if you use it.
 
-**Reporting / export (renders results computed elsewhere):**
-`05_report/summarize_eregulons.py`, `extract_for_plots.py`,
-`export_accessibility_tracks.py`, `export_browser_tracks.py`
+`00_inspect/inspect_anndata.py` · `inspect_h5ad_lite.py` (via
+`00_inspect/run_lite.sh`) · `01_cistopic/run_cistopic.py` ·
+`03_pipeline/probe_region_to_gene_memory.py` · `04_db/characterize_dropped.py`
+→ `reanalyze_dropped.py` (the second reads the CSV the first writes — a
+two-stage analysis, not a duplicate) · `05_report/summarize_eregulons.py` ·
+`docs/verify_claims.py`
 
-**Meta:** `docs/verify_claims.py` (checks the docs against their sources),
-`docs/benchmark_oversample.py` (a supporting sweep, not the main claim)
+**C — never executed.** Exists as the cited source of a number that appears
+elsewhere. Read only to check that citation.
+
+`docs/benchmark_oversample.py` (cited twice inside
+`02_pair/aggregate_atac_sparse.py` as the measurement behind its oversampling
+advice) · `00_inspect/compare_labels.py` · `03_pipeline/_check_pins.py`
 
 **Note:** `01_cistopic/run_cistopic.py` (1,067 lines) is mostly tier 3 — it
-wraps pycisTopic's canonical path with memory management. The scientific
-content is the topic-count choice and the region-set export, which are covered
-by the two `01_cistopic` files in tier 1.
+wraps pycisTopic's canonical path with memory management. Its scientific
+content is the topic-count choice and region-set export, covered by the two
+`01_cistopic` files in tier 1.
 
 ---
+
+## On the size of this repository
+
+~19,000 lines of code for ~300 lines of science invites the question of whether
+it is padded. It was measured, not assumed:
+
+| | lines |
+|---|---|
+| The science (`build_metacells_for_group` + `aggregate`) | 92 |
+| Environment build / diagnose / repair (9 shell scripts) | 1,839 |
+| h5py-only scripts that exist to *bypass* that environment | 1,306 |
+| Memory sizers and sparse rewrites (each follows an OOM) | 1,072 |
+
+The volume is not the analysis. It is the cost of running one conda environment
+on one cluster, plus the repo's stated design premise — every script validates
+its own inputs and fails loudly — applied across 32 scripts, which alone
+accounts for ~19% of the Python (argparse, logging, validation).
+
+**A pruning pass was attempted and found almost nothing to remove.** Every
+candidate turned out to be reachable: invoked by a job script, invoked by a
+documented command, or cited as the source of a number inside live code. The
+only exceptions are `03_pipeline/diagnose_cxxabi.sh` and `fix_cxxabi.sh`
+(370 lines), reachable from RUNBOOK.md and one comment but from no executable
+path — a one-time C++ ABI repair kept as troubleshooting insurance.
+
+So the repository is not carrying dead code. It is carrying a large toolbox in
+which the tools and the pipeline look alike. That is a navigation problem, which
+this map addresses, not a deletion problem.
 
 ## Sign-off questions
 
